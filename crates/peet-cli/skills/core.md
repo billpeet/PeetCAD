@@ -161,6 +161,22 @@ script. Otherwise one `peet` call per part is simpler.
   so on standard error).
 - `close` refuses a document with unsaved changes: save it, or add `"discard": true`.
 
+## Driving peet from a program: `peet serve`
+
+When a program sends many operations one at a time and reads each reply before choosing
+the next (a backend standing in for SolidWorks), start `peet serve` once instead of a
+`peet` call per operation:
+
+- Write one operation per line to its standard input; read exactly one reply line for
+  each from its standard output before writing the next.
+- Documents stay open between lines: open or make each with `open` or `new` (`"keep":
+  true` keeps the others open), move between them with `switch` or `"document"`, and
+  `save` each yourself. Nothing is saved for you.
+- A reply with `"ok": false` is a failed operation, not a dead server: carry on.
+  `"internal": true` marks a failure inside PeetCAD; check the document with `status`.
+- End with `{"op": "exit"}`: its reply lists under `unsaved` any document left with
+  unsaved changes. Closing the input ends it too.
+
 ## More, when the task reaches it
 
 - **Drawing or changing a sketch** (shapes, relations, dimensions, entity labels and

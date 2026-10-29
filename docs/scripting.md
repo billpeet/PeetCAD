@@ -39,6 +39,7 @@ feature.
 peet run [SCRIPT...] [options]     # the operations of scripts (- or none: standard input)
 peet op JSON... [options]          # operations given as JSON
 peet OPERATION [field=value...]    # one operation, by name
+peet serve [--materials CSV] [-q]  # keep documents open, one operation per line in, one reply out
 peet ops [OPERATION]               # the operations, or one with its fields
 peet skills [NAME]                 # how to use peet, for an agent
 peet sessions                      # the running PeetCADs and the part each has open
@@ -96,6 +97,42 @@ so they describe the version being run. Every script in them is run by a test, a
 | 0 | every operation was applied |
 | 1 | an operation was not applied, or `--strict` found features that can't be built. Nothing was saved |
 | 2 | the command line or a file was the problem. Nothing was applied |
+
+### Serving a program: `peet serve`
+
+`peet serve` is for a program that drives PeetCAD operation by operation, as FabSys
+drives SolidWorks: it starts once and keeps its documents open between operations, so
+each costs only its own work.
+
+```text
+> {"op": "open", "path": "J1234 Door Assembly.peet"}
+< {"ok": true, "op": "open", "kind": "assembly", ...}
+> {"op": "set", "name": "Height@Sketch1@J1234 AL3 Door-1", "value": 1800}
+< {"ok": true, "op": "set", ...}
+> {"op": "exit"}
+< {"ok": true, "op": "exit", "unsaved": ["J1234 Door Assembly.peet"]}
+```
+
+- **The protocol.** It reads one operation per line of standard input (the operations of
+  `peet run`, a JSON object each) and writes exactly one reply line for it on standard
+  output, flushed, before it reads the next. Blank lines and lines starting with `#` or
+  `//` are not operations and get no reply. `{"op": "exit"}` (replied to, with
+  `unsaved`: the documents with changes not saved) or the end of the input ends it,
+  with exit code 0.
+- **Documents** stay open until closed: `new` and `open` (with `"keep": true` beside the
+  others), `switch`, `save`, `close` and `documents` work across lines, and `"document"`
+  sends an operation to another one ([several documents](#several-documents)). It starts
+  with one new, empty part, which `open` or `new` replaces. `undo` reaches back across
+  lines.
+- **Nothing is saved** unless an operation saves it (`save`); `exit` leaves the rest.
+- **Failures are replies**, and it goes on: an operation that can't be applied, a line
+  that is not JSON or not one operation (a list goes one per line) reply
+  `"ok": false` with `error`. A failure inside PeetCAD itself (a bug) is caught and
+  replied the same way, with `"internal": true`; the document it was sent to may be
+  partly changed (`status`, `undo`).
+- **Paths** are relative to where `peet serve` was started. The application's own
+  operations (`zoom_to_fit`, `view`) are refused: there is no window. Standard error
+  carries only notes (`-q` silences them).
 
 ### A part that is open in PeetCAD
 
