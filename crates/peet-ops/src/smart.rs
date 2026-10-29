@@ -95,6 +95,18 @@ fn free_name(part: &Model, name: &str) -> String {
         .unwrap_or_else(|| name.to_owned())
 }
 
+/// The name SolidWorks gives a smart feature applied in a part: `Smart-Feature1<HingeMale-1>`,
+/// numbered on from those the part has.
+fn applied_name(part: &Model, component: &str) -> String {
+    let n = (1..)
+        .find(|n| {
+            let prefix = format!("Smart-Feature{n}<");
+            !part.features().any(|f| f.name.starts_with(&prefix))
+        })
+        .unwrap_or(1);
+    free_name(part, &format!("Smart-Feature{n}<{component}>"))
+}
+
 /// Whether the part is sheet metal (a cut in it is a sheet metal cut).
 fn is_sheet_metal(part: &Model) -> bool {
     part.features()
@@ -202,27 +214,7 @@ pub(crate) fn apply(
     let label = format!("Apply Smart Features {name}");
     let mut applied = Vec::new();
     for (_, smart_name, s) in &smart {
-        let target = &targets[s.reference as usize];
-        let Some(MateGeom::Face(face)) = &target.geom else {
-            continue;
-        };
-        let target_names = names_of(assembly, &target.path);
-        let part_name = target_names.join(" / ");
-        // The face's plane, in its part's coordinates.
-        let Geom::Plane(plane) = geometry(doc, &target.path, target)? else {
-            return Err(format!(
-                "Reference {} ({part_name}) is not a flat face: a smart feature is cut from a flat face.",
-                s.reference + 1
-            ));
-        };
-        let mut part = (*model_at(model, &target.path).ok_or("The part is gone.")?).clone();
-        if part.is_assembly() {
-            return Err(format!(
-                "{part_name} is a sub-assembly: give a face of a part in it."
-            ));
-        }
         let sketch_name = smart_part.name_of(s.sketch).to_owned();
-        let sketch = part.add_sketch(PlaneRef::Face(face.clone()), plane);
         // The smart sketch's curves, converted onto the face where the component puts
         // them.
         let curves: Vec<_> = smart_part
@@ -244,6 +236,27 @@ pub(crate) fn apply(
                 smart_part.name
             ));
         }
+        let reference = choose(doc, &own, s, &curves, &targets)?;
+        let target = &targets[reference];
+        let Some(MateGeom::Face(face)) = &target.geom else {
+            continue;
+        };
+        let target_names = names_of(assembly, &target.path);
+        let part_name = target_names.join(" / ");
+        // The face's plane, in its part's coordinates.
+        let Geom::Plane(plane) = geometry(doc, &target.path, target)? else {
+            return Err(format!(
+                "Reference {} ({part_name}) is not a flat face: a smart feature is cut from a flat face.",
+                reference + 1
+            ));
+        };
+        let mut part = (*model_at(model, &target.path).ok_or("The part is gone.")?).clone();
+        if part.is_assembly() {
+            return Err(format!(
+                "{part_name} is a sub-assembly: give a face of a part in it."
+            ));
+        }
+        let sketch = part.add_sketch(PlaneRef::Face(face.clone()), plane);
         for entity in &curves {
             let from = MateEnd {
                 path: own.clone(),
@@ -266,7 +279,7 @@ pub(crate) fn apply(
             follow_entity(&mut part, sketch, None, false, last, reference, &part_name)
                 .map_err(|e| format!("Smart feature {smart_name} on {part_name}: {e}"))?;
         }
-        let made_name = free_name(&part, &format!("{name} {smart_name}"));
+        let made_name = applied_name(&part, own_names.last().map_or("", String::as_str));
         let sketch_label = free_name(&part, &format!("{made_name} {sketch_name}"));
         if let Some(f) = part.feature_mut(sketch) {
             f.name = sketch_label.clone();
@@ -285,7 +298,7 @@ pub(crate) fn apply(
             feature: made_name,
             sketch: sketch_label,
             smart_feature: smart_name.clone(),
-            reference: s.reference,
+            reference: reference as u32,
             entities: curves.len(),
         });
     }
@@ -326,6 +339,75 @@ pub(crate) fn apply(
         );
     }
     Ok(label)
+}
+
+/// Which of the faces a smart feature goes on: the face, parallel to its sketch, that the
+/// component puts it on (nearest the sketch's plane, then nearest the sketch in the
+/// face), as SolidWorks matched it in the assembly the smart component was made in.
+/// None parallel to it: its `reference`, the order SolidWorks would take them in.
+fn choose(
+    doc: &Document,
+    own: &[CompId],
+    s: &SmartFeature,
+    curves: &[peet_sketch::EntityId],
+    targets: &[MateEnd],
+) -> Result<usize, String> {
+    let Some(first) = curves.first() else {
+        return Ok(s.reference as usize);
+    };
+    let from = MateEnd {
+        path: own.to_vec(),
+        geom: Some(MateGeom::Sketch(SketchRef {
+            feature: s.sketch,
+            entity: *first,
+        })),
+    };
+    let mut best: Option<(f64, f64, usize)> = None;
+    for (i, t) in targets.iter().enumerate() {
+        let (Ok(Geom::Plane(plane)), Ok(at)) =
+            (geometry(doc, &t.path, t), geometry(doc, &t.path, &from))
+        else {
+            continue;
+        };
+        let (p, axis) = match at {
+            Geom::Circle { center, normal, .. } | Geom::Arc { center, normal, .. } => {
+                (center, Some(normal))
+            }
+            Geom::Line(a, b) => (a.lerp(b, 0.5), None),
+            Geom::Point(p) => (p, None),
+            Geom::Plane(_) => continue,
+        };
+        let n = plane.frame.z_axis();
+        if axis.is_some_and(|a| a.cross(n).length() > 1e-6) {
+            continue;
+        }
+        let off = (p - plane.origin()).dot(n).abs();
+        let centre = face_centre(doc, &t.path, t).unwrap_or(plane.origin());
+        let across = ((p - centre) - n * (p - centre).dot(n)).length();
+        // To a hundredth of a millimetre: faces in one plane are told apart by where they are
+        let off = (off * 100.0).round();
+        let better = match best {
+            None => true,
+            Some((o, a, _)) => off < o || (off == o && across < a - 1e-6),
+        };
+        if better {
+            best = Some((off, across, i));
+        }
+    }
+    // None parallel to it: as SolidWorks, by order
+    Ok(best.map_or(s.reference as usize, |(_, _, i)| i))
+}
+
+/// The middle of a face given as a mate end, in its part's coordinates.
+fn face_centre(doc: &Document, path: &[CompId], end: &MateEnd) -> Option<peet_math::DVec3> {
+    let Some(MateGeom::Face(face)) = &end.geom else {
+        return None;
+    };
+    let part = model_at(&doc.model, path)?;
+    let built = Document::from_model((*part).clone(), None);
+    let bodies = &built.evaluation().bodies;
+    let found = peet_model::naming::find_face(bodies, face)?;
+    Some(bodies[found.body].face_center(found.id))
 }
 
 /// Writes the file of the deepest linked part or sub-assembly along `path` (the one

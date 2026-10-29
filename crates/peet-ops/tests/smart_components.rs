@@ -135,7 +135,7 @@ fn a_hinge_cuts_its_holes_in_the_door_and_they_follow_it() {
     );
     let made = &applied["applied"][0];
     assert_eq!(made["part"], "Door-1", "{applied}");
-    assert_eq!(made["feature"], "Hinge-1 HingeHoles", "{applied}");
+    assert_eq!(made["feature"], "Smart-Feature1<Hinge-1>", "{applied}");
     assert_eq!(made["entities"], 2, "{applied}");
     assert!(
         (door_volume(&doc) - (before - 2.0 * HOLE)).abs() < 1e-3,
@@ -203,6 +203,91 @@ fn what_is_not_a_smart_component_or_given_too_few_faces_is_refused() {
             "references": [{"component": "Hinge-1", "face": {"normal": [0, 0, -1]}}]}),
     );
     assert!(e.contains("itself"), "{e}");
+}
+
+#[test]
+fn each_smart_feature_goes_on_the_face_it_is_placed_against() {
+    // A bolt through a floor and a plinth (SolidWorks' Plinth bolt): a 6 mm hole in the
+    // floor under it and an 8 mm one in the plinth above, whichever order the faces come in.
+    let dir = temp("two");
+    let plate = dir.join("Plate.peet").to_string_lossy().into_owned();
+    let bolt = dir.join("Bolt.peet").to_string_lossy().into_owned();
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [300, 200]}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "extrude", "sketch": "Sketch1", "depth": 2}),
+    );
+    ok(&mut doc, json!({"op": "save", "path": plate}));
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [-10, -10], "to": [10, 10]}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "extrude", "sketch": "Sketch1", "depth": 10}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "name": "Floor hole", "draw": [{"type": "circle", "center": [0, 0], "radius": 3}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "plane", "from": "top", "distance": 10, "name": "Up"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "Up", "name": "Plinth hole", "draw": [{"type": "circle", "center": [0, 0], "radius": 4}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "smart_feature", "sketch": "Plinth hole", "reference": 0}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "smart_feature", "sketch": "Floor hole", "reference": 1}),
+    );
+    ok(&mut doc, json!({"op": "save", "path": bolt}));
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": plate, "name": "Floor-1", "fixed": true, "at": [0, 0, -2]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": plate, "name": "Plinth-1", "fixed": true, "at": [0, 0, 10]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": bolt, "name": "Bolt-1", "fixed": true, "at": [50, 50, 0]}),
+    );
+    let applied = ok(
+        &mut doc,
+        json!({"op": "apply_smart_features", "component": "Bolt-1", "references": [
+            {"component": "Floor-1", "face": {"normal": [0, 0, 1]}},
+            {"component": "Plinth-1", "face": {"normal": [0, 0, -1]}}]}),
+    );
+    let made: Vec<(String, u64)> = applied["applied"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["part"].as_str().unwrap().to_owned(),
+                a["reference"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        made,
+        [("Plinth-1".to_owned(), 1), ("Floor-1".to_owned(), 0)],
+        "{applied}"
+    );
 }
 
 #[test]

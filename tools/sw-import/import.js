@@ -2256,6 +2256,18 @@ function importPart(doc, dir) {
     const left = members.filter(n => rowOf(n) ? !/^imported/.test(rowOf(n).result) : !SKETCH.test((byName.get(n) || {}).type || ""));
     if (left.length) return record(f, "failed", `what is in it was not all imported: ${left.join(", ")}`);
     made.set(f.name, members.flatMap(n => made.get(n) || []));
+    // FabSys suppresses and unsuppresses it by its own name ("T-Handle Cutout<1>"): the first feature in it
+    // that is not a sketch takes that name, so suppressing it takes the rest (made from it) along
+    const solid = members.find(n => !SKETCH.test((byName.get(n) || {}).type || "") && (made.get(n) || []).length);
+    if (solid) {
+      const peetName = made.get(solid)[0];
+      const renamed = peet.apply({ op: "rename", feature: peetName, name: f.name });
+      if (renamed.ok) {
+        made.set(solid, [f.name, ...made.get(solid).slice(1)]);
+        made.set(f.name, members.flatMap(n => made.get(n) || []));
+        return record(f, "imported", `as what is in it, imported where it is in the tree: ${members.join(", ")}; ${solid} is called ${f.name}`);
+      }
+    }
     record(f, "imported", `as what is in it, imported where it is in the tree: ${members.join(", ")}`);
   }
 
@@ -3072,7 +3084,20 @@ function importPart(doc, dir) {
       const pf = planeFrameOf(f.planeTransform);
       planeFrames.set(f.name, pf);
       const standard = standardPlane(pf);
-      if (standard) { planes.set(f.name, standard); return; }
+      if (standard) {
+        // Sketches on it go on the standard plane, as before; the plane is made too, under its own name, as a
+        // mate end (FabSys mates to "Gland Plate Mid Plane Y")
+        planes.set(f.name, standard);
+        // (SolidWorks' own three are PeetCAD's standard planes, under other names)
+        if (f.suppressed || /^(Front|Top|Right) Plane$/.test(f.name)) return;
+        const name = f.name.trim();
+        const made = peet.apply({ op: "plane", from: standard, distance: 0, name });
+        if (!made.ok) return record(f, "failed", made.error);
+        const where = probe(name);
+        if (where && samePlane(where, pf)) return record(f, "imported", `on the ${standard} plane`);
+        peet.apply({ op: "delete", feature: name });
+        return record(f, "failed", "the plane did not come out where SolidWorks has it");
+      }
       if (f.suppressed) return record(f, "suppressed");
       // A plane square to an axis is an offset of a standard plane. It is where SolidWorks has it, but it
       // no longer follows what it was defined from.

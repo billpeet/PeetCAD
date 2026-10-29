@@ -780,14 +780,15 @@ FabSys's `ApplySmartFeatures` is `apply_smart_features`.
 {"op": "external_references", "component": "Door-1"}
 ```
 
-The door gets two 6 mm holes under the hinge (`Hinge-1 HingeHoles`); when the hinge moves,
+The door gets two 6 mm holes under the hinge (`Smart-Feature1<Hinge-1>`); when the hinge moves,
 they move with it.
 
 - **In the part: `smart_feature`.** `sketch` is a sketch of the part, drawn where the other
   part's face will be (usually on the face or plane the part sits on): its lines, arcs and
-  circles are the profile. `reference` (default 0) says which of the faces given to
-  `apply_smart_features` it goes on, when the component cuts several parts (a plinth bolt
-  through a floor and a plinth). `end`: `sheet` (default: through the sheet or the
+  circles are the profile. When the component cuts several parts (a plinth bolt
+  through a floor and a plinth), each smart feature goes on the face it lies against (of
+  those given, the one parallel to its sketch and nearest it); `reference` (default 0) is
+  its place in SolidWorks' order of references, used where none lies against it. `end`: `sheet` (default: through the sheet or the
   material the face is on), `blind` with `depth`, `through_all`; `reverse` cuts away from
   the part. It changes nothing in the part itself. Several smart features may share a face.
 - **In the assembly: `apply_smart_features`.** `component` is the smart component (a path
@@ -796,8 +797,9 @@ they move with it.
   in a sub-assembly). Each smart feature becomes, in that part, a sketch on the face whose
   entities are the smart sketch converted in context (they follow the component, see
   "In-context references") and a cut of it: a sheet metal cut in sheet metal, else a cut
-  through the material (`up to next`). They are named after the component and the smart
-  feature. The reply's `applied` lists them, and `written` any linked file changed.
+  through the material (`up to next`). They are named as SolidWorks names them,
+  `Smart-Feature1<HingeMale-1>`, numbered on in each part. The reply's `applied` lists
+  them, and `written` any linked file changed.
 - **Fails when** the component's part has no smart features ("not a smart component":
   add them with `smart_feature`, or use the right component), fewer faces are given than
   its features use (the error lists which feature goes on which face), a face is the
