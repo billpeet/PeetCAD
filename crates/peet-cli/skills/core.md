@@ -70,6 +70,9 @@ Done when `status` shows `"failures": []` and `bodies` has the sizes that were a
   not save. Use it when a broken part must not be written.
 - **Exit code:** 0 applied, 1 an operation was not applied, 2 the command line or a file
   was wrong.
+- **`rebuild`** rebuilds the document from the start, reusing nothing (SolidWorks' force
+  rebuild), and replies its `status`. Every operation already rebuilds what it changed:
+  use it only to check that a result doesn't depend on what was remembered.
 
 ## Conditional sizes
 

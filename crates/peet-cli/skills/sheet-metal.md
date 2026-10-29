@@ -36,6 +36,31 @@ features. It always has an exact **flat pattern**, which is what the DXF export 
   sheet is slit). `relief_ratio`: its width, and how far it reaches past the bend, as a
   multiple of the thickness (default 0.5).
 
+### Changing a part's sheet metal: `sheet_metal`
+
+To change the thickness, bend radius or bend model of a sheet metal part that is already
+built (a template set to the job's gauge, as FabSys sets SolidWorks' `Sheet-Metal`
+feature), use `sheet_metal` rather than finding its base flange's name: it changes the
+first base flange (or conversion to sheet metal), or the one `feature` names, and every
+flange that takes the body's settings follows.
+
+```jsonl
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [200, 150]}]}
+{"op": "base_flange", "sketch": "Sketch1", "thickness": 2, "radius": 1}
+{"op": "edge_flange", "length": 25, "edge": {"between": [[0, 0, 2], [200, 0, 2]]}}
+{"op": "sheet_metal", "thickness": 3, "radius": 0.2, "bend": {"deduction": 4.5}}
+{"op": "bodies"}
+```
+
+- Give any of `thickness`, `radius`, `bend` (`{"deduction": ...}`, `{"k_factor": ...}`
+  or `{"allowance": ...}`); the reply's `sheet_metal` has what the feature holds now.
+- In an assembly, add `component`: it changes that component's part, so every instance
+  of it, and writes a linked part's file (`written`). FabSys's `ConfigurePartSheetMetal`
+  is this.
+- A conversion to sheet metal takes no `radius` (its bends keep the solid's).
+- `Thickness@Sheet-Metal`, where a converted part has that address, is the same value:
+  `set` it, or use this.
+
 ## Tabs
 
 A tab adds a flat piece to a sheet metal body: a closed sketch on a flat face of the

@@ -27,7 +27,7 @@ it and run again.
 | a plane | `"top"`, `"front"`, `"right"`, a reference plane's name, or a face selector for a flat face |
 | an axis | `"x"`, `"y"`, `"z"`, a reference axis's name, or an edge selector |
 | a point | `"origin"`, a reference point's name, or a vertex selector |
-| a face | `{"feature": "Extrude1", "side": "end"}` · `{"at": [x, y, z]}` · `{"normal": [x, y, z]}` · `{"body": 0, "index": 5}` |
+| a face | `{"feature": "Extrude1", "side": "end"}` · `{"at": [x, y, z]}` · `{"normal": [x, y, z]}` · `{"body": 0, "index": 5}` · `{"ray": {"from": [x, y, z], "direction": [x, y, z]}}` |
 | an edge | `{"between": [[x, y, z], [x, y, z]]}` · `{"at": [x, y, z]}` · `{"faces": [face, face]}` · `{"body": 0, "index": 7}` |
 | a vertex | `{"at": [x, y, z]}` · `{"body": 0, "index": 2}` |
 
@@ -52,6 +52,29 @@ given must match.
    selector). Or pick from the list by `body` and `index`, in the same call or the next
    (an index is only good until the part changes). A face's `center` there is a point on or near the face for telling faces
    apart, not its centroid: on a ring-shaped face it is off to one side.
+
+## A face by a ray, and SolidWorks' plane names
+
+- **`ray`** picks the first face a ray meets, starting at `from` and going along
+  `direction`: SolidWorks' select by ray, which FabSys uses to pick a face by a point in
+  front of it. A ray that starts on a face meets that face. Use it when you know where a
+  face is seen from, not a point on it. It fails, saying so, when the ray meets nothing.
+  In an assembly with no `component` it searches every component shown
+  (`peet skills assemblies`).
+- **`"Front Plane"`, `"Top Plane"`, `"Right Plane"`** (with ` Plane`) mean a reference
+  plane of that name if the document has one, else PeetCAD's standard plane.
+  `solidworks_planes` adds SolidWorks' three, oriented as SolidWorks has them, to a part
+  or assembly converted from SolidWorks; `top`, `front` and `right` are always
+  PeetCAD's own.
+
+```jsonl
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [60, 40]}]}
+{"op": "extrude", "sketch": "Sketch1", "depth": 6}
+{"op": "name_face", "face": {"ray": {"from": [30, 20, 100], "direction": [0, 0, -1]}}, "name": "TopFace"}
+{"op": "solidworks_planes"}
+{"op": "sketch", "on": "Front Plane", "draw": [{"type": "circle", "center": [30, 20], "radius": 3}]}
+{"op": "measure", "a": {"face": {"name": "TopFace"}}}
+```
 
 ## Things that go wrong
 

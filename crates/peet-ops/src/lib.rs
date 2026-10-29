@@ -520,7 +520,7 @@ fn help() -> Map<String, Value> {
             "plane": "\"top\", \"front\", \"right\", a reference plane's name, or a face selector",
             "axis": "\"x\", \"y\", \"z\", a reference axis's name, or an edge selector",
             "point": "\"origin\", a reference point's name, or a vertex selector",
-            "face": "{at: [x,y,z], normal: [x,y,z], feature, side: start|end|side|top|bottom|bend|wall, body, index}: all given fields must match exactly one face",
+            "face": "{name, at: [x,y,z], normal: [x,y,z], feature, side: start|end|side|top|bottom|bend|wall, body, index, ray: {from: [x,y,z], direction: [x,y,z]} (the first face it meets)}: all given fields must match exactly one face",
             "edge": "{between: [[x,y,z],[x,y,z]], at: [x,y,z], faces: [face, face], body, index}",
             "vertex": "{at: [x,y,z], body, index}",
         }),
