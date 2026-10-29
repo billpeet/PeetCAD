@@ -64,6 +64,28 @@ PeetCAD, or SolidWorks' mass properties where there is no STEP. The STEP is pref
 mass properties of an assembly can be stale: Plinth Folded Assembly's are worked out with its pipes 300 mm
 long, as the part has them, where its own equation makes them 308 mm, as its STEP has them.
 
+### A template library
+
+```
+node tools/sw-import/import-asm.js <exports> <parts run folder> <library folder> --link
+node tools/sw-import/smart.js <smart-defs.json> <library folder>
+node tools/sw-import/manifests.js <library folder> <SolidWorks manifests folder> <output folder>
+```
+
+With `--link` the output folder is a library as SolidWorks' Templates folder is: every part is copied into it
+and every component, of a part or a sub-assembly, is inserted linked to the file beside the assembly (a relative
+link), named as SolidWorks names it (`HingeMale-1`). A copy of an assembly and its parts opens with the copies, and
+FabSys swaps a component for its copy with `replace` and `link`. The assembly's own reference planes are made too.
+
+`smart.js` gives the parts their smart features (`smart_feature`) from definitions decoded out of the SolidWorks
+files (the export has none: SolidWorks keeps a smart component's library features as documents inside the part).
+Lines and circles SolidWorks converted from the part's own edges are projected from them; the rest is drawn where
+SolidWorks had it.
+
+`manifests.js` writes FabSys's template manifests (schema 2) for the library, its identity copied from SolidWorks'
+manifest of each template, so that FabSys's own template validation (`FABSYS_CORPUS_MANIFESTS`) checks every name
+a script uses against the library.
+
 ## How it works
 
 It applies one operation at a time, one `peet` call each, because the next operation

@@ -3075,6 +3075,14 @@ function importPart(doc, dir) {
     }
   }
 
+  /** A plane made; one suppressed in SolidWorks is suppressed too (where it is live nowhere), as FabSys names it. */
+  function asleepPlane(f, name, how) {
+    if (!f.suppressed) return record(f, "imported", how);
+    if (liveElsewhere(f.name)) return record(f, "imported", how + "; suppressed in this configuration");
+    peet.apply({ op: "suppress", feature: name, on: true, configurations: "all" });
+    return record(f, "imported and suppressed", how);
+  }
+
   function handleLive(f) {
     const v = values(f);
     if (STRUCTURE.test(f.type)) return;
@@ -3090,17 +3098,16 @@ function importPart(doc, dir) {
         // mate end (FabSys mates to "Gland Plate Mid Plane Y")
         planes.set(f.name, standard);
         // (SolidWorks' own three are PeetCAD's standard planes, under other names)
-        if (f.suppressed || /^(Front|Top|Right) Plane$/.test(f.name)) return;
+        if (/^(Front|Top|Right) Plane$/.test(f.name)) return;
         if (/^(front|top|right)$/i.test(f.name.trim())) return record(f, "not supported", `a plane called ${f.name} is PeetCAD's standard plane of that name`);
         const name = f.name.trim();
         const made = peet.apply({ op: "plane", from: standard, distance: 0, name });
         if (!made.ok) return record(f, "failed", made.error);
         const where = probe(name);
-        if (where && samePlane(where, pf)) return record(f, "imported", `on the ${standard} plane`);
+        if (where && samePlane(where, pf)) return asleepPlane(f, name, `on the ${standard} plane`);
         peet.apply({ op: "delete", feature: name });
         return record(f, "failed", "the plane did not come out where SolidWorks has it");
       }
-      if (f.suppressed) return record(f, "suppressed");
       // A plane square to an axis is an offset of a standard plane. It is where SolidWorks has it, but it
       // no longer follows what it was defined from.
       const axis = ["x", "y", "z"].find(k => Math.abs(Math.abs(dot(pf.n, AXES[k])) - 1) < 1e-9);
@@ -3114,7 +3121,7 @@ function importPart(doc, dir) {
         const tried = peet.apply(op);
         if (!tried.ok) return record(f, "failed", tried.error);
         const where = probe(name);
-        if (where && samePlane(where, pf)) { planes.set(f.name, name); return record(f, "imported", "as a fixed offset plane"); }
+        if (where && samePlane(where, pf)) { planes.set(f.name, name); return asleepPlane(f, name, "as a fixed offset plane"); }
         peet.apply({ op: "delete", feature: name });
       }
       return record(f, "failed", "the plane did not come out where SolidWorks has it");

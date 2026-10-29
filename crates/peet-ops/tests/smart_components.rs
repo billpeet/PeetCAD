@@ -203,6 +203,12 @@ fn what_is_not_a_smart_component_or_given_too_few_faces_is_refused() {
             "references": [{"component": "Hinge-1", "face": {"normal": [0, 0, -1]}}]}),
     );
     assert!(e.contains("itself"), "{e}");
+    let e = error(
+        &mut doc,
+        json!({"op": "apply_smart_features", "component": "Hinge-1",
+            "references": [{"component": "Door-1", "face": {"normal": [1, 0, 0]}}]}),
+    );
+    assert!(e.contains("not parallel"), "{e}");
 }
 
 #[test]

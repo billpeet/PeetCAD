@@ -266,6 +266,21 @@ pub(crate) fn apply(
                 })),
             };
             let last = geometry(doc, &target.path, &from)?;
+            // Seen flat on the face, or the face is not the one the component sits against
+            let n = plane.frame.z_axis();
+            let square = match last {
+                Geom::Circle { normal, .. } | Geom::Arc { normal, .. } => {
+                    normal.cross(n).length() < 1e-6
+                }
+                Geom::Line(a, b) => (b - a).normalize_or_zero().dot(n).abs() < 1e-6,
+                _ => true,
+            };
+            if !square {
+                return Err(format!(
+                    "Smart feature {smart_name} of {name} is not parallel to reference {} ({part_name}): give the face of {part_name} that {name} sits against.",
+                    reference + 1
+                ));
+            }
             let reference = |last: Geom| External {
                 context: context.clone(),
                 component: target.path.clone(),

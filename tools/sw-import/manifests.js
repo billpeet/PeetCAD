@@ -38,9 +38,9 @@ function ask(file, ops) {
 
 // PeetCAD's names for SolidWorks' feature types where FabSys checks the type (a plane must be a RefPlane)
 const TYPES = { "Reference plane": "RefPlane" };
-// SolidWorks' standard planes and origin: every part and assembly has them. PeetCAD's are its own (`top` is
-// SolidWorks' Front Plane, `front` its Top Plane, `right` its Right Plane), which the FabSys backend maps.
-const STANDARD = [["Front Plane", "RefPlane"], ["Top Plane", "RefPlane"], ["Right Plane", "RefPlane"], ["Origin", "OriginProfileFeature"]];
+// The origin, which every part and assembly has (SolidWorks' Front, Top and Right Plane are the parts' own
+// reference planes, from solidworks_planes)
+const STANDARD = [["Origin", "OriginProfileFeature"]];
 
 /** An assembly's component instances, at every depth, by SolidWorks' paths ("Hinge Assembly-1/HingeMale-1"). */
 function componentsOf(file, configuration, prefix = "", depth = 0) {
