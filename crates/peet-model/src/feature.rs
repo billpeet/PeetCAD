@@ -824,6 +824,38 @@ pub struct FoldFeature {
     pub bends: Vec<FaceRef>,
 }
 
+/// A smart feature (SolidWorks'): a cut this part, a smart component, makes in the part
+/// it is placed against in an assembly. It changes nothing in this part: its sketch, drawn
+/// in this part's coordinates where the other part's face is to be, is the profile, and
+/// `apply_smart_features` in an assembly converts it onto the face it is given and cuts
+/// that part there, the sketch following this component wherever it goes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SmartFeature {
+    /// The profile: a sketch of this part.
+    pub sketch: FeatureId,
+    /// Which of the faces the feature is applied with it goes on: 0 for the first
+    /// (SolidWorks' references, in order).
+    pub reference: u32,
+    /// How far the cut reaches, as a sheet metal cut's.
+    pub end: SheetCutEnd,
+    /// For [`SheetCutEnd::Blind`]: how deep, from the face.
+    pub depth: Scalar,
+    /// Away from the part instead of into it.
+    pub reverse: bool,
+}
+
+impl SmartFeature {
+    pub fn new(sketch: FeatureId) -> Self {
+        Self {
+            sketch,
+            reference: 0,
+            end: SheetCutEnd::Sheet,
+            depth: Scalar::new(10.0),
+            reverse: false,
+        }
+    }
+}
+
 /// How the corners where flanges meet are treated.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CornerFeature {
@@ -1024,6 +1056,8 @@ pub enum FeatureKind {
     Fold(Box<FoldFeature>),
     /// A sketch in space: points and lines held by relations and dimensions.
     Sketch3d(Box<crate::sketch3d::Sketch3dFeature>),
+    /// A cut this part makes in another where it is placed in an assembly (model schema 12).
+    Smart(Box<SmartFeature>),
 }
 
 impl FeatureKind {
@@ -1103,6 +1137,7 @@ impl FeatureKind {
             Self::InsertPart(_) => "Inserted part",
             Self::StructuralMember(_) => "Structural member",
             Self::Sketch3d(_) => "3D sketch",
+            Self::Smart(_) => "Smart feature",
         }
     }
 
@@ -1156,6 +1191,7 @@ impl FeatureKind {
             Self::InsertPart(_) => "Part",
             Self::StructuralMember(_) => "Structural-Member",
             Self::Sketch3d(_) => "3DSketch",
+            Self::Smart(_) => "Smart Feature",
         }
     }
 
@@ -1228,6 +1264,7 @@ impl FeatureKind {
             Self::Sweep(s) => Some(s.profile),
             Self::Loft(l) => l.sections.first().copied(),
             Self::StructuralMember(m) => Some(m.profile),
+            Self::Smart(s) => Some(s.sketch),
             _ => None,
         }
     }
@@ -1449,6 +1486,7 @@ impl FeatureKind {
                 }
             }
             Self::Sketch3d(_) => {}
+            Self::Smart(s) => out.push(s.sketch),
         }
         out.sort_unstable();
         out.dedup();
@@ -1559,6 +1597,7 @@ impl FeatureKind {
             }
             Self::StructuralMember(m) => vec![&m.rotate],
             Self::Sketch3d(s) => s.dimensions.iter().collect(),
+            Self::Smart(s) => vec![&s.depth],
         }
     }
 }
@@ -1714,6 +1753,7 @@ macro_rules! slots {
                     v
                 }
                 Self::SheetCut(c) => vec![("depth", Length, & $($m)? c.depth)],
+                Self::Smart(c) => vec![("depth", Length, & $($m)? c.depth)],
                 Self::MoveBody(b) => {
                     let b = & $($m)? **b;
                     let [dx, dy, dz] = & $($m)? b.translate;
@@ -2042,7 +2082,8 @@ impl From<FeatureKind> for FeatureKindV9 {
             | FeatureKind::StructuralMember(_)
             | FeatureKind::Unfold(_)
             | FeatureKind::Fold(_)
-            | FeatureKind::Sketch3d(_) => {
+            | FeatureKind::Sketch3d(_)
+            | FeatureKind::Smart(_) => {
                 panic!("schemas before 12 have bodies moved or parts inserted")
             }
         }
@@ -2310,7 +2351,8 @@ impl From<FeatureKind> for FeatureKindV11 {
             | FeatureKind::StructuralMember(_)
             | FeatureKind::Unfold(_)
             | FeatureKind::Fold(_)
-            | FeatureKind::Sketch3d(_) => {
+            | FeatureKind::Sketch3d(_)
+            | FeatureKind::Smart(_) => {
                 panic!("schemas before 12 have bodies moved or parts inserted")
             }
         }
@@ -2574,7 +2616,8 @@ impl From<&FeatureKind> for FeatureKindV8 {
             | FeatureKind::StructuralMember(_)
             | FeatureKind::Unfold(_)
             | FeatureKind::Fold(_)
-            | FeatureKind::Sketch3d(_) => {
+            | FeatureKind::Sketch3d(_)
+            | FeatureKind::Smart(_) => {
                 panic!("schemas before 12 have no {}", kind.type_name())
             }
         }

@@ -1,6 +1,6 @@
 ---
 name: assemblies
-description: Assemblies in peet - starting one, inserting parts as components, placing and turning them, mates that hold components together (coincident, concentric, distance, angle, parallel, fasten; a point kept on a path), dragging a mated component to pose a mechanism, component patterns (rows of copies, copies round an axis, counts and spacings from expressions), assembly cuts (cutting components in the assembly only, with a sketch on a plane or face and edges converted from components), configurations (a component showing one of its part's configurations, and an assembly's own configurations: left and right hinged, with components and mates suppressed, configured and placed per configuration, equations that differ per configuration, derived configurations), equations that size and suppress components from the assembly (SolidWorks addresses like Height@Sketch1@Door-1, reference dimensions, making a component independent), linked parts that follow their own files, interference between components, the bill of materials and the mass of the whole, hiding, isolating, colouring and making components see-through, display states (named looks of the assembly, linked to configurations or not), exploded views, STEP files with their assembly structure (import and export), replacing and deleting, changing a part of an assembly, sub-assemblies, saving and exporting.
+description: Assemblies in peet - starting one, inserting parts as components, placing and turning them, mates that hold components together (coincident, concentric, distance, angle, parallel, fasten; a point kept on a path), dragging a mated component to pose a mechanism, component patterns (rows of copies, copies round an axis, counts and spacings from expressions), assembly cuts (cutting components in the assembly only, with a sketch on a plane or face and edges converted from components), configurations (a component showing one of its part's configurations, and an assembly's own configurations: left and right hinged, with components and mates suppressed, configured and placed per configuration, equations that differ per configuration, derived configurations), equations that size and suppress components from the assembly (SolidWorks addresses like Height@Sketch1@Door-1, reference dimensions, making a component independent), linked parts that follow their own files, interference between components, the bill of materials and the mass of the whole, hiding, isolating, colouring and making components see-through, smart components (hardware that cuts its holes in the part it is placed on: SolidWorks smart features, FabSys ApplySmartFeatures), display states (named looks of the assembly, linked to configurations or not), exploded views, STEP files with their assembly structure (import and export), replacing and deleting, changing a part of an assembly, sub-assemblies, saving and exporting.
 ---
 
 # Assemblies
@@ -756,6 +756,53 @@ moves on; unlocked, it catches up (140); broken, it stays 140 whatever the plate
 The post runs up to the plate's top face, 15 tall, then 35 once the plate is 20 higher;
 its left side (line 10) stays on the assembly's right plane. Broken, both stay where they
 are.
+
+## Smart components
+
+A smart component (SolidWorks') is a part that carries the cuts it needs in the part it is
+placed against: a hinge its screw holes in the door, a vent hood its cut-out in the wall.
+Use one for hardware placed many times: place it with mates, then apply its features.
+FabSys's `ApplySmartFeatures` is `apply_smart_features`.
+
+```jsonl
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [300, 200]}]}
+{"op": "base_flange", "sketch": "Sketch1", "thickness": 2}
+{"op": "new", "keep": true}
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [40, 20]}]}
+{"op": "extrude", "sketch": "Sketch1", "depth": 10}
+{"op": "sketch", "on": "top", "name": "Hinge Holes", "draw": [{"type": "circle", "center": [10, 10], "radius": 3}, {"type": "circle", "center": [30, 10], "radius": 3}]}
+{"op": "smart_feature", "name": "HingeHoles", "sketch": "Hinge Holes"}
+{"op": "new", "assembly": true, "keep": true}
+{"op": "insert", "part": 1, "name": "Door-1", "fixed": true}
+{"op": "insert", "part": 2, "name": "Hinge-1", "at": [50, 60, 2]}
+{"op": "apply_smart_features", "component": "Hinge-1", "references": [{"component": "Door-1", "face": {"normal": [0, 0, 1]}}]}
+{"op": "place", "component": "Hinge-1", "at": [150, 100, 2]}
+{"op": "external_references", "component": "Door-1"}
+```
+
+The door gets two 6 mm holes under the hinge (`Hinge-1 HingeHoles`); when the hinge moves,
+they move with it.
+
+- **In the part: `smart_feature`.** `sketch` is a sketch of the part, drawn where the other
+  part's face will be (usually on the face or plane the part sits on): its lines, arcs and
+  circles are the profile. `reference` (default 0) says which of the faces given to
+  `apply_smart_features` it goes on, when the component cuts several parts (a plinth bolt
+  through a floor and a plinth). `end`: `sheet` (default: through the sheet or the
+  material the face is on), `blind` with `depth`, `through_all`; `reverse` cuts away from
+  the part. It changes nothing in the part itself. Several smart features may share a face.
+- **In the assembly: `apply_smart_features`.** `component` is the smart component (a path
+  for one in a sub-assembly, as `["Door Assembly-1", "Hinge Assembly-1", "HingeMale-1"]`);
+  `references` the faces, in order, each a mate end on the part to cut (a path for a part
+  in a sub-assembly). Each smart feature becomes, in that part, a sketch on the face whose
+  entities are the smart sketch converted in context (they follow the component, see
+  "In-context references") and a cut of it: a sheet metal cut in sheet metal, else a cut
+  through the material (`up to next`). They are named after the component and the smart
+  feature. The reply's `applied` lists them, and `written` any linked file changed.
+- **Fails when** the component's part has no smart features ("not a smart component":
+  add them with `smart_feature`, or use the right component), fewer faces are given than
+  its features use (the error lists which feature goes on which face), a face is the
+  component's own or not flat, or the sketch can't be seen flat on the face (the face is
+  not parallel to the smart sketch: give the face the component sits against).
 
 ## Changing components
 

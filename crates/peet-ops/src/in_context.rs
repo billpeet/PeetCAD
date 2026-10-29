@@ -234,7 +234,7 @@ fn feature_in(part: &Model, sel: &FeatureSel) -> Result<FeatureId, String> {
 }
 
 /// The names along a path of components, from the assembly's own.
-fn names_of(assembly: &Assembly, path: &[CompId]) -> Vec<String> {
+pub(crate) fn names_of(assembly: &Assembly, path: &[CompId]) -> Vec<String> {
     let mut names = Vec::new();
     let mut at: Option<Arc<Model>> = None;
     for id in path {
@@ -253,7 +253,7 @@ fn names_of(assembly: &Assembly, path: &[CompId]) -> Vec<String> {
 
 /// Where `target` is, in the coordinates of the part at `own`, as the assembly was last
 /// rebuilt.
-fn geometry(doc: &Document, own: &[CompId], target: &MateEnd) -> Result<Geom, String> {
+pub(crate) fn geometry(doc: &Document, own: &[CompId], target: &MateEnd) -> Result<Geom, String> {
     let geom = target.geom.as_ref().ok_or(
         "'from' names a whole component: give the face, edge, vertex, plane or sketch entity to follow.",
     )?;
@@ -314,7 +314,7 @@ fn same_kind(geometry: &Geometry, geom: &Geom, plane: Plane) -> bool {
 }
 
 /// Makes an entity of `sketch` follow `last` (`reference` built around it). Returns the entity.
-fn follow_entity(
+pub(crate) fn follow_entity(
     part: &mut Model,
     fid: FeatureId,
     entity: Option<u32>,
@@ -747,28 +747,44 @@ pub(crate) fn change(
 /// moved, as SolidWorks saves the parts an assembly changed with it. Returns the files
 /// written.
 pub(crate) fn write_moved_links(doc: &Document) -> Result<Vec<PathBuf>, String> {
-    let Some(assembly) = doc.model.assembly() else {
+    if !doc.model.is_assembly() {
         return Ok(Vec::new());
-    };
+    }
     let here = context_key(&doc.title());
-    let mut out = Vec::new();
-    for d in assembly.definitions() {
-        let Some(link) = &d.link else {
-            continue;
+    // The linked files to write: a linked part with references in this context at any
+    // depth, or the nearest linked sub-assembly above a part of its own that has them.
+    fn changed(model: &Model, here: &str, out: &mut Vec<(peet_model::Link, Arc<Model>)>) -> bool {
+        let Some(assembly) = model.assembly() else {
+            return false;
         };
-        if !d
-            .model
-            .external_references()
-            .iter()
-            .any(|r| context_key(&r.external.context) == here)
-        {
-            continue;
+        let mut own = false;
+        for d in assembly.definitions() {
+            let has = if d.model.is_assembly() {
+                changed(&d.model, here, out)
+            } else {
+                d.model
+                    .external_references()
+                    .iter()
+                    .any(|r| context_key(&r.external.context) == here)
+            };
+            if has {
+                match &d.link {
+                    Some(link) => out.push((link.clone(), d.model.clone())),
+                    None => own = true,
+                }
+            }
         }
+        own
+    }
+    let mut files = Vec::new();
+    changed(&doc.model, &here, &mut files);
+    let mut out = Vec::new();
+    for (link, model) in files {
         crate::links::unavailable()?;
-        let path = crate::links::find(link, crate::links::folder(doc).as_deref())
+        let path = crate::links::find(&link, crate::links::folder(doc).as_deref())
             .unwrap_or_else(|| PathBuf::from(&link.path));
         let bytes = peet_io::document::save(
-            &d.model.for_file(path.parent()),
+            &model.for_file(path.parent()),
             &peet_io::document::Metadata::default(),
             None,
         )

@@ -4,7 +4,7 @@
  * of import.js made, and says how close each came out.
  *
  *   node tools/sw-import/import-asm.js <export.swx.json | folder of exports> <parts run folder> <output folder>
- *        [--peet <peet>] [--only <text>]
+ *        [--peet <peet>] [--only <text>] [--link]
  *
  * For each assembly it writes <name>.peet (an assembly), <name>.jsonl (the operations) and <name>.report.json.
  * A component is inserted where SolidWorks has it, then the mates are added: a mate that holds there moves
@@ -12,6 +12,12 @@
  *
  * Sub-assemblies are imported first, from their own export where there is one (Hinge Assembly), or else
  * from the components their parent lists under them (Escutcheon Surround, whose file is not in Templates).
+ *
+ * With --link the output folder is a library, as SolidWorks' Templates folder is: each part is copied into it
+ * (from the parts run folder) and every component, of a part or a sub-assembly, is inserted linked to the file
+ * beside the assembly (a relative link), so a copy of an assembly and its parts opens with the copies and a
+ * component can be swapped for another file, as FabSys does with SolidWorks' templates. Sub-assemblies are
+ * written into the output folder too, not under sub-assemblies\.
  */
 const fs = require("fs");
 const path = require("path");
@@ -24,8 +30,10 @@ const repo = path.resolve(__dirname, "..", "..");
 const peetExe = option("--peet")
   || [path.join(repo, "target", "release", "peet.exe"), path.join(repo, "target", "debug", "peet.exe"), "peet"].find(p => p === "peet" || fs.existsSync(p));
 const only = option("--only");
+const flag = name => { const i = args.indexOf(name); if (i < 0) return false; args.splice(i, 1); return true; };
+const linked = flag("--link");
 if (args.length !== 3) {
-  console.error("Usage: node import-asm.js <export.swx.json | folder of exports> <parts run folder> <output folder> [--peet <peet>] [--only <text>]");
+  console.error("Usage: node import-asm.js <export.swx.json | folder of exports> <parts run folder> <output folder> [--peet <peet>] [--only <text>] [--link]");
   process.exit(2);
 }
 const [input, partsDir, outDir] = args.map(a => path.resolve(a));
@@ -136,9 +144,17 @@ const exportsByName = new Map();
 for (const f of fs.readdirSync(exportDir).filter(f => f.endsWith(".swx.json"))) exportsByName.set(f.replace(/\.swx\.json$/, "").toLowerCase(), path.join(exportDir, f));
 const exportOf = file => exportsByName.get(path.basename(file).toLowerCase());
 const partFileOf = file => {
-  const p = path.join(partsDir, path.basename(file).replace(/\.sldprt$/i, "") + ".peet");
-  return fs.existsSync(p) ? p : null;
+  const name = path.basename(file).replace(/\.sldprt$/i, "") + ".peet";
+  const p = path.join(partsDir, name);
+  if (!fs.existsSync(p)) return null;
+  if (!linked || path.resolve(partsDir) === path.resolve(outDir)) return p;
+  // A library: the part beside the assembly, copied once from the run (an assembly's in-context features may
+  // change it there afterwards, as SolidWorks' change the template part)
+  const there = path.join(outDir, name);
+  if (!copiedParts.has(there)) { fs.copyFileSync(p, there); copiedParts.add(there); }
+  return there;
 };
+const copiedParts = new Set();
 const partReport = file => {
   const p = path.join(partsDir, path.basename(file).replace(/\.sldprt$/i, "") + ".report.json");
   return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p)) : null;
@@ -1688,7 +1704,7 @@ function importAssembly(name, exp, outFile, listed = null, frame = null) {
     const { m, note } = placementOf(c, all, placeOf, local);
     if (note) row.placedBy = note;
     const rot = axisAngle(m);
-    const op = { op: "insert", path: source, name: c.path, at: m.t.map(v => tidy(v * MM)), ...(rot ? { rotate: rot } : {}), fixed: !!c.fixed, ...(configuration ? { configuration } : {}) };
+    const op = { op: "insert", path: source, ...(linked ? { link: true } : {}), name: c.path, at: m.t.map(v => tidy(v * MM)), ...(rot ? { rotate: rot } : {}), fixed: !!c.fixed, ...(configuration ? { configuration } : {}) };
     const reply = peet.apply(op);
     if (!reply.ok) { row.result = "failed"; row.why = reply.error; report.left.push(`${c.path}: ${reply.error}`); continue; }
     row.result = "inserted";
@@ -2098,12 +2114,17 @@ function anchorOf(c, all) {
  * parent lists under it.
  */
 const subs = new Map();
+// With --link: the assemblies imported into the library so far, by name
+const inLibrary = new Map();
 function importSub(c, all) {
   const exp = exportOf(c.file);
   const key = c.file.toLowerCase();
   if (subs.has(key)) return subs.get(key);
   const name = path.basename(c.file).replace(/\.sldasm$/i, "");
-  const file = path.join(outDir, "sub-assemblies", `${name}.peet`);
+  // In a library, an assembly imported already (as an assembly of its own or a sub-assembly) is that file
+  const done = linked && exp && inLibrary.get(name.toLowerCase());
+  if (done) { subs.set(key, done); return done; }
+  const file = linked ? path.join(outDir, `${name}.peet`) : path.join(outDir, "sub-assemblies", `${name}.peet`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   let made;
   try {
@@ -2112,6 +2133,7 @@ function importSub(c, all) {
       if (!j.configurations || !j.configurations.length) throw new Error("its export is empty: " + (j.error || ""));
       const r = importAssembly(name, j, file);
       made = { path: file, report: r, configurations: j.configurations.map(x => x.name) };
+      if (linked) inLibrary.set(name.toLowerCase(), made);
     } else {
       // Not exported (outside Templates): what its parent lists under it, placed relative to it
       const prefix = c.path + "/";
@@ -2136,8 +2158,16 @@ for (const file of inputs.filter(f => !only || path.basename(f).toLowerCase().in
   if (!j.configurations || !j.configurations.length) { summary.push({ name, verdict: "not exported", error: j.error }); console.log(`${"not exported".padEnd(60)} ${name}`); continue; }
   const started = Date.now();
   let r;
-  try { r = importAssembly(name, j, path.join(outDir, name + ".peet")); }
-  catch (e) { r = { name, verdict: "the importer failed", error: e.stack }; }
+  const done = linked && inLibrary.get(name.toLowerCase());
+  if (done) r = done.report;
+  else {
+    try {
+      const file = path.join(outDir, name + ".peet");
+      r = importAssembly(name, j, file);
+      if (linked) inLibrary.set(name.toLowerCase(), { path: file, report: r, configurations: j.configurations.map(x => x.name) });
+    }
+    catch (e) { r = { name, verdict: "the importer failed", error: e.stack }; }
+  }
   const mates = r.mates || [];
   const row = {
     name, verdict: r.verdict, seconds: Math.round((Date.now() - started) / 1000), off_mm: r.off_mm,
