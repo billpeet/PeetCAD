@@ -135,12 +135,28 @@ impl Varying {
             .retain(|t, _| components.iter().any(|c| c.id == t.component()));
     }
 
+    /// The expressions of the equations in the other configurations, each changed by
+    /// `rename` where it gives a new one.
+    pub(crate) fn rewrite_equations(&mut self, rename: impl Fn(&str) -> Option<String>) {
+        for expression in self
+            .equations
+            .values_mut()
+            .flat_map(BTreeMap::values_mut)
+            .flatten()
+        {
+            if let Some(new) = rename(expression) {
+                *expression = new;
+            }
+        }
+    }
+
     /// A component made an instance of another part: the configurations it showed were
-    /// that part's, so in every configuration it shows the new part's active one.
-    pub(crate) fn forget_part(&mut self, id: CompId) {
+    /// that part's, so in every configuration it shows the new part's configuration that
+    /// `same` gives (the one of the same name), or else its active one.
+    pub(crate) fn forget_part(&mut self, id: CompId, same: impl Fn(ConfigId) -> Option<ConfigId>) {
         if let Some(states) = self.components.get_mut(&id) {
             for s in states.values_mut() {
-                s.configuration = None;
+                s.configuration = s.configuration.and_then(&same);
             }
         }
     }

@@ -454,6 +454,25 @@ pub enum Op {
     FlatPattern {
         on: Option<bool>,
     },
+    /// Set a sheet metal part's thickness, default bend radius and bend model: those of
+    /// its first base flange (or conversion to sheet metal), as SolidWorks' Sheet-Metal
+    /// feature holds them. In an assembly, of a component's part (every instance of it,
+    /// and a linked part's file). Lengths in document units.
+    SheetMetal {
+        component: Option<crate::assembly::CompSel>,
+        feature: Option<FeatureSel>,
+        thickness: Option<f64>,
+        radius: Option<f64>,
+        bend: Option<crate::library::GaugeBend>,
+    },
+    /// Rebuild everything from the start, reusing nothing remembered from earlier
+    /// rebuilds (SolidWorks' force rebuild).
+    Rebuild,
+    /// Add SolidWorks' standard planes as reference planes named as SolidWorks names
+    /// them, for a document in SolidWorks' coordinates (one converted from SolidWorks):
+    /// Front Plane (PeetCAD's top), Top Plane (PeetCAD's front, facing the other way) and
+    /// Right Plane. Ones it already has are left as they are.
+    SolidworksPlanes,
     /// Set a base flange's thickness, bend radius and bend model from the material
     /// tables: the gauge named, or the one nearest a thickness.
     ApplyMaterial {
@@ -765,6 +784,9 @@ impl Op {
             Self::ShowDatum { .. } => "show",
             Self::FlatPattern { .. } => "flat_pattern",
             Self::ApplyMaterial { .. } => "apply_material",
+            Self::SheetMetal { .. } => "sheet_metal",
+            Self::Rebuild => "rebuild",
+            Self::SolidworksPlanes => "solidworks_planes",
             Self::SetMaterial { .. } => "set_material",
             Self::SetColor { .. } => "set_color",
             Self::SetGauge(_) => "set_gauge",
@@ -1106,6 +1128,21 @@ pub(crate) const OTHER_OPS: &[(&str, &str, &str)] = &[
         "The material and gauge tables: thickness, bend radius and bend model by material and gauge.",
     ),
     (
+        "sheet_metal",
+        "thickness, radius (the default inner bend radius), bend ({k_factor} | {allowance} | {deduction}), feature (a base flange or conversion; default the first), component (in an assembly: whose part)",
+        "Set a sheet metal part's thickness, bend radius and bend model, as SolidWorks' Sheet-Metal feature holds them (what FabSys sets as a part's or a component's sheet metal). In an assembly, of a component's part: every instance of it, and a linked part's file.",
+    ),
+    (
+        "rebuild",
+        "",
+        "Rebuild the document from the start, reusing nothing (SolidWorks' force rebuild). Replies its status.",
+    ),
+    (
+        "solidworks_planes",
+        "",
+        "Add SolidWorks' standard planes as reference planes called Front Plane (XY: PeetCAD's top), Top Plane (XZ facing +Y: PeetCAD's front turned over) and Right Plane (YZ), for a part or assembly in SolidWorks' coordinates. A script naming them then means SolidWorks' planes. Ones the document has are left.",
+    ),
+    (
         "apply_material",
         "material, gauge or thickness (the nearest gauge), feature (a base flange; default the first)",
         "Set a sheet metal body's thickness, bend radius and bend model from the material tables, and the part's material.",
@@ -1284,6 +1321,15 @@ fn read(op: &str, a: &mut Args, doc: &Document) -> Result<Op, String> {
                     .unwrap_or(DxfPlacement::Keep),
             }
         }
+        "sheet_metal" => Op::SheetMetal {
+            component: a.parsed("component", crate::assembly::CompSel::parse)?,
+            feature: a.parsed("feature", FeatureSel::parse)?,
+            thickness: a.parsed("thickness", number)?,
+            radius: a.parsed("radius", number)?,
+            bend: a.parsed("bend", crate::library::bend)?,
+        },
+        "rebuild" => Op::Rebuild,
+        "solidworks_planes" => Op::SolidworksPlanes,
         "apply_material" => Op::ApplyMaterial {
             material: a.required("material", |v| text(v).map(str::to_owned))?,
             gauge: a.string("gauge")?,

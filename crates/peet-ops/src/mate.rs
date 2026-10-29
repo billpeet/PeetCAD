@@ -163,7 +163,12 @@ impl MateEndSel {
             1 => Some(GeomSel::parse(&Value::Object(map))?),
             _ => return Err(wrong()),
         };
-        if component.is_empty() && (geom.is_some() || sketch.is_some() || chosen == 0) {
+        // A face found by a ray is found among the assembly's components.
+        let ray = matches!(
+            &geom,
+            Some(GeomSel::Face(crate::value::FaceSel::Find(q))) if q.ray.is_some()
+        );
+        if component.is_empty() && !ray && (geom.is_some() || sketch.is_some() || chosen == 0) {
             return Err(format!(
                 "An end with no 'component' is on the assembly itself, which has only its standard planes and its origin: give \"plane\" (top, front or right) or \"origin\": true, or name a component. Not {v}"
             ));
@@ -189,6 +194,12 @@ impl MateEndSel {
                 sketch,
             } => (component, geom, plane, *origin, sketch),
         };
+        if component.is_empty()
+            && let Some(GeomSel::Face(crate::value::FaceSel::Find(q))) = geom
+            && let Some(ray) = &q.ray
+        {
+            return select::assembly_ray(doc, ray);
+        }
         if component.is_empty() {
             // The assembly's own: fixed, where the assembly's origin is.
             the_assembly(doc)?;
@@ -197,8 +208,11 @@ impl MateEndSel {
                 Some(PlaneSel::Standard(p)) => Ok(MateEnd::of_assembly(MateGeom::Plane(
                     peet_model::PlaneRef::Standard(*p),
                 ))),
+                // A reference plane of the assembly's own ('plane' in the assembly).
+                Some(sel @ PlaneSel::Feature(_)) => select::plane(doc, sel)
+                    .map(|(r, _)| MateEnd::of_assembly(MateGeom::Plane(r))),
                 _ => Err(
-                    "The assembly itself has only its standard planes (top, front, right) and its origin: name a component for any other plane."
+                    "The assembly itself has only its standard planes (top, front, right), the reference planes made in it with 'plane', and its origin: name a component for any other plane or face."
                         .to_owned(),
                 ),
             };
@@ -685,7 +699,10 @@ fn status_word(status: Option<&Status>) -> &'static str {
     }
 }
 
-pub(crate) fn end_out(assembly: &Assembly, end: &MateEnd) -> Value {
+pub(crate) fn end_out(own: &Model, end: &MateEnd) -> Value {
+    let Some(assembly) = own.assembly() else {
+        return Value::Null;
+    };
     let mut m = Map::new();
     let mut names = Vec::new();
     let mut model: Option<Arc<Model>> = None;
@@ -722,6 +739,7 @@ pub(crate) fn end_out(assembly: &Assembly, end: &MateEnd) -> Value {
     {
         let value = match plane {
             peet_model::PlaneRef::Standard(p) => json!(p.label()),
+            peet_model::PlaneRef::Feature(id) if end.is_assembly() => json!(own.name_of(*id)),
             peet_model::PlaneRef::Feature(id) => {
                 model.map_or_else(|| json!(id.0), |m| json!(m.name_of(*id)))
             }
@@ -763,10 +781,10 @@ pub(crate) fn kind_values(kind: &MateKind, doc: &Document, m: &mut Map<String, V
                 if let Some(axis) = follow {
                     m.insert("follow".to_owned(), json!(axis.word()));
                 }
-                if let (Some(r), Some(assembly)) = (roll, doc.model.assembly()) {
+                if let Some(r) = roll {
                     m.insert(
                         "roll".to_owned(),
-                        json!({ "axis": r.axis.word(), "up": end_out(assembly, &r.up) }),
+                        json!({ "axis": r.axis.word(), "up": end_out(&doc.model, &r.up) }),
                     );
                 }
             }
@@ -812,27 +830,27 @@ pub(crate) fn mate_out(doc: &Document, id: MateId) -> Value {
     m.insert("type".to_owned(), json!(mate.kind.word()));
     let (a, b) = match &mate.kind {
         MateKind::Width { a2, b2, .. } => (
-            json!([end_out(assembly, &mate.a), end_out(assembly, a2)]),
+            json!([end_out(&doc.model, &mate.a), end_out(&doc.model, a2)]),
             b2.as_ref().map_or_else(
-                || end_out(assembly, &mate.b),
-                |b2| json!([end_out(assembly, &mate.b), end_out(assembly, b2)]),
+                || end_out(&doc.model, &mate.b),
+                |b2| json!([end_out(&doc.model, &mate.b), end_out(&doc.model, b2)]),
             ),
         ),
         MateKind::Path { more, .. } if !more.is_empty() => (
-            end_out(assembly, &mate.a),
+            end_out(&doc.model, &mate.a),
             json!(
                 std::iter::once(&mate.b)
                     .chain(more)
-                    .map(|e| end_out(assembly, e))
+                    .map(|e| end_out(&doc.model, e))
                     .collect::<Vec<_>>()
             ),
         ),
-        _ => (end_out(assembly, &mate.a), end_out(assembly, &mate.b)),
+        _ => (end_out(&doc.model, &mate.a), end_out(&doc.model, &mate.b)),
     };
     m.insert("a".to_owned(), a);
     m.insert("b".to_owned(), b);
     if let MateKind::Symmetric { plane } = &mate.kind {
-        m.insert("plane".to_owned(), end_out(assembly, plane));
+        m.insert("plane".to_owned(), end_out(&doc.model, plane));
     }
     kind_values(&mate.kind, doc, &mut m);
     if mate.flip() {

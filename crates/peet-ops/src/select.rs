@@ -79,6 +79,124 @@ fn point_triangle(p: DVec3, [a, b, c]: [DVec3; 3]) -> f64 {
         .min(point_segment(p, c, a))
 }
 
+/// How far along a ray (`dir` of unit length) it meets a triangle, if it does.
+fn ray_triangle(from: DVec3, dir: DVec3, [a, b, c]: [DVec3; 3]) -> Option<f64> {
+    const EPS: f64 = 1e-9;
+    let (e1, e2) = (b - a, c - a);
+    let p = dir.cross(e2);
+    let det = e1.dot(p);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let s = from - a;
+    let u = s.dot(p) / det;
+    if !(-EPS..=1.0 + EPS).contains(&u) {
+        return None;
+    }
+    let q = s.cross(e1);
+    let v = dir.dot(q) / det;
+    if v < -EPS || u + v > 1.0 + EPS {
+        return None;
+    }
+    Some(e2.dot(q) / det)
+}
+
+/// The first face of a mesh a ray meets, at or after its start: the face and how far
+/// along the ray. `dir` is of unit length; a ray starting on a face meets that face.
+pub(crate) fn ray_hit(mesh: &SolidMesh, from: DVec3, dir: DVec3) -> Option<(FaceId, f64)> {
+    let mut best: Option<(FaceId, f64)> = None;
+    for m in &mesh.faces {
+        for t in &m.triangles {
+            let corners = t.map(|i| m.positions[i as usize]);
+            if let Some(d) = ray_triangle(from, dir, corners)
+                && d >= -ON * 10.0
+                && best.is_none_or(|(_, b)| d < b)
+            {
+                best = Some((m.face, d));
+            }
+        }
+    }
+    best
+}
+
+/// The first face of the part's bodies (of `body` only, if given) a ray meets:
+/// `(body, face, where)`.
+fn ray_face(
+    doc: &Document,
+    ray: &crate::value::Ray,
+    body: Option<usize>,
+) -> Result<(usize, FaceId, DVec3), String> {
+    let units = &doc.model.parameters.units;
+    let from = mm3(ray.from, units);
+    let dir = direction(ray.direction)?;
+    let mut best: Option<(usize, FaceId, f64)> = None;
+    for bi in 0..bodies(doc).len() {
+        if body.is_some_and(|b| b != bi) {
+            continue;
+        }
+        if let Some((f, d)) = ray_hit(&mesh(doc, bi), from, dir)
+            && best.is_none_or(|(.., b)| d < b)
+        {
+            best = Some((bi, f, d));
+        }
+    }
+    best.map(|(b, f, d)| (b, f, from + dir * d)).ok_or_else(|| {
+        format!(
+            "A ray from {} along {} meets no face of the part.",
+            point3_out(from, units),
+            crate::args::direction_out(dir)
+        )
+    })
+}
+
+/// The first face of the assembly's components a ray meets, in the assembly's
+/// coordinates, as SolidWorks selects by ray in an assembly: the face as a mate end, on
+/// the component (through sub-assemblies, down to the part) it belongs to. Hidden and
+/// suppressed components are not met.
+pub(crate) fn assembly_ray(
+    doc: &Document,
+    ray: &crate::value::Ray,
+) -> Result<peet_model::MateEnd, String> {
+    let units = &doc.model.parameters.units;
+    let assembly = doc
+        .model
+        .assembly()
+        .ok_or_else(|| format!("{} is a part, not an assembly.", doc.title()))?;
+    let from = mm3(ray.from, units);
+    let dir = direction(ray.direction)?;
+    let mut best: Option<(usize, FaceId, f64)> = None;
+    for (i, (view, placed)) in doc.bodies.iter().zip(&doc.placed).enumerate() {
+        let shown = placed
+            .component()
+            .and_then(|c| assembly.component(c))
+            .is_some_and(|c| c.visible && !c.suppressed);
+        if placed.hidden || !shown {
+            continue;
+        }
+        let start = placed.frame.to_local(from);
+        let along = placed.frame.vector_to_local(dir);
+        if let Some((f, d)) = ray_hit(view.tess(), start, along)
+            && best.is_none_or(|(.., b)| d < b)
+        {
+            best = Some((i, f, d));
+        }
+    }
+    let (i, f, d) = best.ok_or_else(|| {
+        format!(
+            "A ray from {} along {} meets no face of a component that is shown.",
+            point3_out(from, units),
+            crate::args::direction_out(dir)
+        )
+    })?;
+    let placed = &doc.placed[i];
+    let mut r = doc.bodies[i].source.face_ref(f);
+    r.hint = placed.frame.to_local(from + dir * d);
+    Ok(peet_model::MateEnd {
+        path: placed.path.clone(),
+        geom: Some(peet_model::MateGeom::Face(r)),
+    })
+}
+
 fn check_body(doc: &Document, body: Option<usize>) -> Result<(), String> {
     match body {
         Some(i) if i >= bodies(doc).len() => Err(format!(
@@ -221,7 +339,13 @@ fn find_face_query(doc: &Document, q: &FaceQuery) -> Result<(usize, FaceId), Str
         .as_ref()
         .map(|name| named_face(doc, name))
         .transpose()?;
+    let rayed = q
+        .ray
+        .as_ref()
+        .map(|r| ray_face(doc, r, q.body).map(|(b, f, _)| (b, f)))
+        .transpose()?;
     if named.is_none()
+        && rayed.is_none()
         && at.is_none()
         && normal.is_none()
         && feature.is_none()
@@ -229,7 +353,7 @@ fn find_face_query(doc: &Document, q: &FaceQuery) -> Result<(usize, FaceId), Str
         && q.index.is_none()
     {
         return Err(
-            "A face selector needs more than a body: add name, at, normal, feature, side or index."
+            "A face selector needs more than a body: add name, at, normal, feature, side, index or ray."
                 .to_owned(),
         );
     }
@@ -242,6 +366,9 @@ fn find_face_query(doc: &Document, q: &FaceQuery) -> Result<(usize, FaceId), Str
         let mut tess = None;
         for f in body.solid.face_ids() {
             if named.is_some_and(|target| target != (bi, f)) {
+                continue;
+            }
+            if rayed.is_some_and(|target| target != (bi, f)) {
                 continue;
             }
             if q.index.is_some_and(|i| i != f.0) {
@@ -327,6 +454,10 @@ pub(crate) fn face_ref(doc: &Document, sel: &FaceSel) -> Result<FaceRef, String>
             // face is cut in pieces later
             if let Some(at) = q.at {
                 r.hint = mm3(at, &doc.model.parameters.units);
+            } else if let Some(ray) = &q.ray
+                && let Ok((.., hit)) = ray_face(doc, ray, q.body)
+            {
+                r.hint = hit;
             }
             Ok(r)
         }
@@ -536,7 +667,17 @@ pub(crate) fn plane(doc: &Document, sel: &PlaneSel) -> Result<(PlaneRef, Plane),
             )),
         },
         PlaneSel::Feature(f) => {
-            let id = f.resolve(doc)?;
+            let id = match f.resolve(doc) {
+                Ok(id) => id,
+                // "Top Plane" with no reference plane of that name: the standard plane.
+                Err(e) => match f {
+                    crate::value::FeatureSel::Name(n) => match PlaneSel::standard_word(n) {
+                        Some(p) => return Ok((PlaneRef::Standard(p), p.plane())),
+                        None => return Err(e),
+                    },
+                    crate::value::FeatureSel::Id(_) => return Err(e),
+                },
+            };
             match doc.evaluation().output(id) {
                 Output::Plane(p) => Ok((PlaneRef::Feature(id), p)),
                 Output::Frame(frame) => Ok((PlaneRef::Feature(id), Plane { frame })),

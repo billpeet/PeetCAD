@@ -200,9 +200,10 @@ pub(crate) fn read(path: &Path, depth: usize) -> Result<Model, String> {
     let mut model = opened.model;
     // An assembly's own links are relative to where it is.
     model.from_file(path.parent());
-    // A part is known by its file's name, as in the application's title.
+    // A part is known by its file's name, as in the application's title and as
+    // SolidWorks names a component after its file.
     if let Some(stem) = path.file_stem().map(|s| s.to_string_lossy())
-        && matches!(model.name.as_str(), "Part1" | "Assembly1")
+        && !stem.is_empty()
     {
         model.name = stem.into_owned();
     }

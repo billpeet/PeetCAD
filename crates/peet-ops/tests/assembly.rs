@@ -2437,10 +2437,11 @@ fn links_are_relative_to_the_assemblys_folder() {
         links_in_file(&elsewhere)[2],
         ("bracket.peet".to_owned(), true)
     );
-    ok(&mut doc, json!({"op": "unlink", "part": "Bracket"}));
+    // Linked, it is known by its file's name.
+    ok(&mut doc, json!({"op": "unlink", "part": "bracket"}));
     ok(
         &mut doc,
-        json!({"op": "link", "part": "Bracket", "path": out, "absolute": true}),
+        json!({"op": "link", "part": "bracket", "path": out, "absolute": true}),
     );
     ok(&mut doc, json!({"op": "save"}));
     assert!(!links_in_file(&elsewhere)[2].1);

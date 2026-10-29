@@ -41,6 +41,121 @@ pub struct Gauge {
     pub density: Option<f64>,
 }
 
+/// A `bend` field: `{"k_factor": n}`, `{"allowance": n}` or `{"deduction": n}`.
+pub(crate) fn bend(v: &Value) -> Result<GaugeBend, String> {
+    let entry = v
+        .as_object()
+        .filter(|m| m.len() == 1)
+        .and_then(|m| m.iter().next());
+    match entry {
+        Some((k, n)) if k == "k_factor" => number(n).map(GaugeBend::KFactor),
+        Some((k, n)) if k == "allowance" => number(n).map(GaugeBend::Allowance),
+        Some((k, n)) if k == "deduction" => number(n).map(GaugeBend::Deduction),
+        _ => Err(format!(
+            "expected {{\"k_factor\": number}}, {{\"allowance\": number}} or {{\"deduction\": number}}, not {v}"
+        )),
+    }
+}
+
+/// Sets a part's sheet metal settings, as SolidWorks' Sheet-Metal feature holds them: on
+/// `feature`, or the first base flange or conversion to sheet metal. Lengths in mm.
+/// Returns the feature and what it has now.
+pub(crate) fn sheet_metal(
+    part: &mut Model,
+    units: &peet_sketch::expr::Units,
+    feature: Option<&crate::value::FeatureSel>,
+    thickness: Option<f64>,
+    radius: Option<f64>,
+    bend: Option<BendModel>,
+) -> Result<(FeatureId, Value), String> {
+    let is_sheet = |kind: &FeatureKind| {
+        matches!(
+            kind,
+            FeatureKind::BaseFlange(_) | FeatureKind::ConvertToSheet(_)
+        )
+    };
+    let target = match feature {
+        Some(crate::value::FeatureSel::Id(id)) => part
+            .feature(*id)
+            .map(|f| f.id)
+            .ok_or_else(|| format!("{} has no feature with the id {}.", part.name, id.0))?,
+        Some(crate::value::FeatureSel::Name(name)) => part
+            .features()
+            .find(|f| f.name == *name)
+            .map(|f| f.id)
+            .ok_or_else(|| format!("{} has no feature called '{name}'.", part.name))?,
+        None => part
+            .features()
+            .find(|f| is_sheet(&f.kind))
+            .map(|f| f.id)
+            .ok_or_else(|| {
+                format!(
+                    "{} is not sheet metal: it has no base flange or conversion to sheet metal.",
+                    part.name
+                )
+            })?,
+    };
+    let model_def = |b: BendModel| match b {
+        BendModel::KFactor(k) => BendModelDef::KFactor(Scalar::new(k)),
+        BendModel::Allowance(v) => BendModelDef::Allowance(Scalar::new(v)),
+        BendModel::Deduction(v) => BendModelDef::Deduction(Scalar::new(v)),
+    };
+    let name = part.name_of(target).to_owned();
+    let Some(f) = part.feature_mut(target) else {
+        return Err("The feature no longer exists.".to_owned());
+    };
+    let bend_out = |m: &BendModelDef| match m {
+        BendModelDef::KFactor(k) => json!({ "k_factor": k.value }),
+        BendModelDef::Allowance(v) => json!({ "allowance": length_out(v.value, units) }),
+        BendModelDef::Deduction(v) => json!({ "deduction": length_out(v.value, units) }),
+    };
+    let now = match &mut f.kind {
+        FeatureKind::BaseFlange(b) => {
+            if let Some(t) = thickness {
+                b.settings.thickness = Scalar::new(t);
+            }
+            if let Some(r) = radius {
+                b.settings.radius = Scalar::new(r);
+            }
+            if let Some(m) = bend {
+                b.settings.model = model_def(m);
+            }
+            json!({
+                "thickness": length_out(b.settings.thickness.value, units),
+                "radius": length_out(b.settings.radius.value, units),
+                "bend": bend_out(&b.settings.model),
+            })
+        }
+        FeatureKind::ConvertToSheet(c) => {
+            if radius.is_some() {
+                return Err(format!(
+                    "{name} converts a solid to sheet metal: its bends keep the radii the solid has, so it takes no radius."
+                ));
+            }
+            if let Some(t) = thickness {
+                c.thickness = Some(Scalar::new(t));
+            }
+            if let Some(m) = bend {
+                c.model = model_def(m);
+            }
+            json!({
+                "thickness": c.thickness.as_ref().map(|t| length_out(t.value, units)),
+                "bend": bend_out(&c.model),
+            })
+        }
+        _ => {
+            return Err(format!(
+                "{name} is not a base flange or a conversion to sheet metal: they hold a part's sheet metal settings."
+            ));
+        }
+    };
+    let mut out = json!({ "feature": name });
+    if let (Value::Object(o), Value::Object(n)) = (&mut out, now) {
+        o.extend(n);
+    }
+    Ok((target, json!({ "sheet_metal": out })))
+}
+
 impl Gauge {
     pub(crate) fn parse(a: &mut Args) -> Result<Self, String> {
         let name = |v: &Value| text(v).map(str::to_owned);
@@ -49,20 +164,7 @@ impl Gauge {
             gauge: a.required("gauge", name)?,
             thickness: a.parsed("thickness", number)?,
             radius: a.parsed("radius", number)?,
-            bend: a.parsed("bend", |v| {
-                let entry = v
-                    .as_object()
-                    .filter(|m| m.len() == 1)
-                    .and_then(|m| m.iter().next());
-                match entry {
-                    Some((k, n)) if k == "k_factor" => number(n).map(GaugeBend::KFactor),
-                    Some((k, n)) if k == "allowance" => number(n).map(GaugeBend::Allowance),
-                    Some((k, n)) if k == "deduction" => number(n).map(GaugeBend::Deduction),
-                    _ => Err(format!(
-                        "expected {{\"k_factor\": number}}, {{\"allowance\": number}} or {{\"deduction\": number}}, not {v}"
-                    )),
-                }
-            })?,
+            bend: a.parsed("bend", bend)?,
             notes: a.string("notes")?,
             density: a.parsed("density", number)?,
         })
