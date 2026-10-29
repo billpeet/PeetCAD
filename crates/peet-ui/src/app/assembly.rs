@@ -2437,7 +2437,8 @@ mod tests {
         // part is being worked on.
         app.watch_links(&ctx);
         assert!(app.link_watch.is_notified(), "the system's watcher runs");
-        assert_eq!(app.doc.undo_label(), Some("Insert Bracket-1"));
+        // Named after its file, as SolidWorks names a component.
+        assert_eq!(app.doc.undo_label(), Some("Insert bracket-1"));
         let steps = app.journal().len();
         ok(&mut app, &ctx, json!({"op": "new", "keep": true}));
         app.watch_links(&ctx);

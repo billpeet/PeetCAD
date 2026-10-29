@@ -39,6 +39,7 @@ feature.
 peet run [SCRIPT...] [options]     # the operations of scripts (- or none: standard input)
 peet op JSON... [options]          # operations given as JSON
 peet OPERATION [field=value...]    # one operation, by name
+peet serve [--materials CSV] [-q]  # keep documents open, one operation per line in, one reply out
 peet ops [OPERATION]               # the operations, or one with its fields
 peet skills [NAME]                 # how to use peet, for an agent
 peet sessions                      # the running PeetCADs and the part each has open
@@ -96,6 +97,42 @@ so they describe the version being run. Every script in them is run by a test, a
 | 0 | every operation was applied |
 | 1 | an operation was not applied, or `--strict` found features that can't be built. Nothing was saved |
 | 2 | the command line or a file was the problem. Nothing was applied |
+
+### Serving a program: `peet serve`
+
+`peet serve` is for a program that drives PeetCAD operation by operation, as FabSys
+drives SolidWorks: it starts once and keeps its documents open between operations, so
+each costs only its own work.
+
+```text
+> {"op": "open", "path": "J1234 Door Assembly.peet"}
+< {"ok": true, "op": "open", "kind": "assembly", ...}
+> {"op": "set", "name": "Height@Sketch1@J1234 AL3 Door-1", "value": 1800}
+< {"ok": true, "op": "set", ...}
+> {"op": "exit"}
+< {"ok": true, "op": "exit", "unsaved": ["J1234 Door Assembly.peet"]}
+```
+
+- **The protocol.** It reads one operation per line of standard input (the operations of
+  `peet run`, a JSON object each) and writes exactly one reply line for it on standard
+  output, flushed, before it reads the next. Blank lines and lines starting with `#` or
+  `//` are not operations and get no reply. `{"op": "exit"}` (replied to, with
+  `unsaved`: the documents with changes not saved) or the end of the input ends it,
+  with exit code 0.
+- **Documents** stay open until closed: `new` and `open` (with `"keep": true` beside the
+  others), `switch`, `save`, `close` and `documents` work across lines, and `"document"`
+  sends an operation to another one ([several documents](#several-documents)). It starts
+  with one new, empty part, which `open` or `new` replaces. `undo` reaches back across
+  lines.
+- **Nothing is saved** unless an operation saves it (`save`); `exit` leaves the rest.
+- **Failures are replies**, and it goes on: an operation that can't be applied, a line
+  that is not JSON or not one operation (a list goes one per line) reply
+  `"ok": false` with `error`. A failure inside PeetCAD itself (a bug) is caught and
+  replied the same way, with `"internal": true`; the document it was sent to may be
+  partly changed (`status`, `undo`).
+- **Paths** are relative to where `peet serve` was started. The application's own
+  operations (`zoom_to_fit`, `view`) are refused: there is no window. Standard error
+  carries only notes (`-q` silences them).
 
 ### A part that is open in PeetCAD
 
@@ -221,10 +258,10 @@ the candidates. All the fields given must match.
 
 | Wanted | Selector |
 |---|---|
-| plane | `"top"`, `"front"`, `"right"`, a reference plane's name, or a face selector (a flat face) |
+| plane | `"top"`, `"front"`, `"right"`, a reference plane's name, or a face selector (a flat face). `"Front Plane"`, `"Top Plane"`, `"Right Plane"` are the reference plane of that name where there is one (`solidworks_planes`), else the standard plane |
 | axis | `"x"`, `"y"`, `"z"`, a reference axis's name, or an edge selector |
 | point | `"origin"`, a reference point's name, or a vertex selector |
-| face | `{"name": "Front"}` a user name · `{"at": [x,y,z]}` a point on it · `{"normal": [x,y,z]}` its outward normal · `{"feature": "Extrude1", "side": "end"}` what made it · `{"body": 0, "index": 5}` from `faces` |
+| face | `{"name": "Front"}` a user name · `{"at": [x,y,z]}` a point on it · `{"normal": [x,y,z]}` its outward normal · `{"feature": "Extrude1", "side": "end"}` what made it · `{"body": 0, "index": 5}` from `faces` · `{"ray": {"from": [x,y,z], "direction": [x,y,z]}}` the first face a ray meets (SolidWorks' select by ray; a ray starting on a face meets it) |
 | edge | `{"name": "HingeEdge"}` a user name · `{"between": [[x,y,z],[x,y,z]]}` its ends · `{"at": [x,y,z]}` a point on it · `{"faces": [face, face]}` where two faces meet · `{"body": 0, "index": 7}` from `edges` |
 | vertex | `{"at": [x,y,z]}` · `{"body": 0, "index": 2}` |
 
@@ -543,6 +580,8 @@ with their defaults' types):
 | `set_material` | `material` (a name, or `null` for none), `density` in kg/m³ (left out: the material tables' density for that material). What the part is made of: saved with it, and what `mass` weighs it with |
 | `set_color` | `color` (`"#rrggbb"` or `[r, g, b]`, or `null` for the usual colour): what the part is drawn in |
 | `undo`, `redo` | |
+| `rebuild` | rebuilds from the start, reusing nothing (SolidWorks' force rebuild); replies the status |
+| `solidworks_planes` | adds SolidWorks' standard planes as reference planes, `Front Plane` (PeetCAD's top), `Top Plane` (PeetCAD's front, facing +Y) and `Right Plane`, for a part or assembly in SolidWorks' coordinates; leaves ones it has |
 
 #A suppression expression overrides the saved manual flag while it is set. Clearing
 it restores the per-configuration manual flags. `suppress` changes those saved flags;
@@ -666,6 +705,7 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 |---|---|
 | `new` with `"assembly": true` | starts an empty assembly |
 | `insert` | the part: `path` (a `.peet` file; an assembly becomes a sub-assembly), `sample`, `part` (an open document, by name or id) or `component` (another instance of its part). `name`, `at` (`[x, y, z]`: where the part's origin goes), `rotate` (`{"axis": "x"`, `"y"`, `"z"` or `[x, y, z]`, `"angle": degrees}`, from the part's own orientation), `fixed` (default: only the first component), `configuration` (the configuration of the part it shows; default the part's active one, or with `component` the configuration that component shows) |
+| `insert`: names | a component is named after its part with the lowest number free (`Bracket-1`); a part from a file is called after the file (`J1 AL3 Door.peet`: `J1 AL3 Door-1`), as SolidWorks names components |
 | `insert` with `"link": true` | with `path`: the component follows the part's file instead of the assembly keeping a copy. The link is relative to the assembly's folder unless `"absolute": true` |
 | `update_links` | reads every linked part from its file again, and in a part every inserted part (`insert_part`). Replies `updated` (the parts or features that changed) and `warnings` (files that can't be found or read) |
 | `link` | `part` (a part's name or id, as `components` lists the parts), `path`, `absolute` (default false): links the part to the file if there is one (the part becomes what is in it), else writes the part there first |
@@ -675,7 +715,7 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 | `fix` | `component`, `on` (default true), `configurations` (of the assembly; default the active one) |
 | `component_configuration` | `component`, `configuration` (a configuration of its part, or `null` for whichever the part has active), `configurations` (of the assembly; default the active one): the configuration of its part the component shows, SolidWorks' referenced configuration (FabSys's `SetSubComponentConfig`). Two components of one part can show different configurations; each configuration is built once (model schema 12) |
 | `flexible` | `component` (a sub-assembly), `on` (default true): solves the sub-assembly as flexible (SolidWorks' "Solve as: Flexible"): its own mates are solved in this assembly with this one's, so what is not fixed in it moves as they let it, each instance posed on its own. `components` then gives `"flexible": true` and `moving` (each moving component's `path`, `at`, `rotate`, `freedom`). Off: rigid, as its file has it (model schema 12) |
-| `replace` | `component`, and `path`, `sample` or `part`: another part, in the same place |
+| `replace` | `component`, and `path`, `sample` or `part`: another part, in the same place. With `path` and `"link": true` (and `absolute`, as for `insert`) the component follows that file (SolidWorks' replace components). It keeps its mates and the configuration of the same name; one named after its part (`Door-2`) is renamed after the new one (`J1 Door-1`), and the assembly's equations and parameters that read it follow |
 | `rename`, `suppress`, `show`, `delete` | `component` in place of `feature`. `suppress` takes `configurations` (of the assembly; default the active one) |
 | `component_pattern` | `components` (the originals), `type` (`linear`, `circular`), `name`. Linear: `direction`, `spacing`, `count` (the original included; a whole number or an expression, worked out at every rebuild: copies are made and removed as it changes), `flip`, `second` (`{direction, spacing, count, flip}`). Circular: `axis`, `angle` (default 360), `count`, `flip`. A direction or axis is `"x"`, `"y"`, `"z"`, `[x, y, z]`, `{"origin": …, "direction": …}`, or `{"component": …, "edge" or "face": selector}` |
 | `edit_component_pattern` | `pattern`, and any of `count`, `spacing`, `angle`, `flip`, `direction`, `axis`, `second` (`null` removes it) |
@@ -700,7 +740,8 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 | `explode_steps` | every step (`id`, `name`, `components`, `by`), whether the assembly is shown `exploded`, and under `moved` each component the steps move with its total `by` and where it is drawn exploded (`at`) |
 | `open_component` | `component`: opens its part as a document of its own, in the configuration the component shows (the reply's `configuration`), and makes it current. `save` without a `path` on that document stores it back, as one undo step of the assembly, for every component of the part, with the part's own active configuration as it was. Needs a session |
 | `components` | every component (`id`, `name`, `part`, `configuration` (of its part, where the part has several), `at`, `rotate`, `fixed`, `freedom`, `mates`, `status`, `message`, `min`, `max`) and every part (`id`, `name`, `kind`, how many `components`, `material`, and where it has several `configurations` and its `active_configuration`); how many `mates`, and the `freedom` left |
-| `mate` | `type` (`coincident`, `concentric`, `parallel`, `distance`, `angle`, `fasten`, `width`, `slot`, `limit_angle`, `limit_distance`, `symmetric`, `path`), `a`, `b`, `distance` or `angle` for those types, `flip` (`true`: aligned), `align` (`aligned`, `anti_aligned` or `closest`: which way round the ends go, SolidWorks' alignment; not with `flip`), `flip_dimension` (the distance or angle measured the other way: SolidWorks' "flip dimension"), `suppressed` (added without being solved: nothing moves until it is unsuppressed), `name`. An end is `{"component": …, "face": selector}` (or `"edge"`, `"vertex"`, `"plane"`, `"origin": true`, or `"sketch"` (name or id) with `"entity"` (the id `feature` gives a point, line, circle or arc)), the selector in the part's own coordinates. `component` is a name, id or nonempty path array from the top-level component down through sub-assemblies. `plane` takes `"top"`, `"front"`, `"right"`, a reference plane or coordinate system by name or id, or a planar face selector. With no `component`, the end is the assembly's own: `{"plane": "top"}` (or `front`, `right`) or `{"origin": true}`, fixed where the assembly is. For `fasten` the component alone |
+| `mate` | `type` (`coincident`, `concentric`, `parallel`, `distance`, `angle`, `fasten`, `width`, `slot`, `limit_angle`, `limit_distance`, `symmetric`, `path`), `a`, `b`, `distance` or `angle` for those types, `flip` (`true`: aligned), `align` (`aligned`, `anti_aligned` or `closest`: which way round the ends go, SolidWorks' alignment; not with `flip`), `flip_dimension` (the distance or angle measured the other way: SolidWorks' "flip dimension"), `suppressed` (added without being solved: nothing moves until it is unsuppressed), `name`. An end is `{"component": …, "face": selector}` (or `"edge"`, `"vertex"`, `"plane"`, `"origin": true`, or `"sketch"` (name or id) with `"entity"` (the id `feature` gives a point, line, circle or arc)), the selector in the part's own coordinates. `component` is a name, id or nonempty path array from the top-level component down through sub-assemblies. `plane` takes `"top"`, `"front"`, `"right"`, a reference plane or coordinate system by name or id, or a planar face selector. With no `component`, the end is the assembly's own: `{"plane": "top"}` (or `front`, `right`, or a reference plane made in the assembly with `plane`) or `{"origin": true}`, fixed where the assembly is; or `{"face": {"ray": …}}`, the first face of any shown component the ray meets, in the assembly's coordinates. For `fasten` the component alone |
+| `plane` in an assembly | a reference plane of the assembly's own (SolidWorks' `InsertPlane` in an assembly), from its planes; `features`, `edit`, `rename` and `delete` work on it, and mate ends with no `component` take it |
 | `mate`, `type: "slot"` | `a`, `b`: a face of a straight slot (one of its round ends or a flat side) and an axis (a round face or edge), either way round. The axis stays parallel to the slot's ends and on the line between their axes. `mode`: `free` by default (anywhere between the ends), `centered`, `dimension` with `distance` (from the first end's axis: the round end picked, else the end the part lists first), `percent` with `percent`; `flip_dimension` measures from the other end. No `flip` or `align` |
 | `mate`, `type: "limit_angle"` / `"limit_distance"` | `a`, `b`, `min`, `max` (degrees, or lengths): the angle or distance, measured as `angle` and `distance` measure it (`flip_dimension` too), kept anywhere between them |
 | `mate`, `type: "symmetric"` | `a`, `b`: two planes, points or lines, mirror images in `plane` (an end: a flat face or a reference plane, or the assembly's own). The plane is on one of the two components, on a fixed one, or the assembly's; `a` and `b` may be on one component (both faces of a part, centred on the plane) |
@@ -902,6 +943,7 @@ part and sub-assembly once, as a product, and each component as an occurrence of
 | Operation | Fields |
 |---|---|
 | `flat_pattern` | `on` (left out: the other way). A view, not an undo step; selectors and exports always mean the folded part |
+| `sheet_metal` | any of `thickness`, `radius` (default inner bend radius), `bend` (`{"k_factor"}`, `{"allowance"}` or `{"deduction"}`); `feature` (a base flange or conversion; default the first). Sets what SolidWorks' Sheet-Metal feature holds. In an assembly, `component`: that component's part, every instance, and a linked part's file (`written`). Replies `sheet_metal` |
 | `apply_material` | `material`, and `gauge` or `thickness` (the nearest gauge); `feature` (a base flange; default the first). Also makes it the part's material, if the table has a density |
 | `set_gauge` | `material`, `gauge`, `thickness`, `radius`, `bend` (`{"k_factor": …}`, `{"allowance": …}` or `{"deduction": …}`), `notes`: adds a row, or changes one. `density` (kg/m³) is the material's, not the row's |
 | `delete_gauge` | `material`, `gauge` (left out: the whole table) |

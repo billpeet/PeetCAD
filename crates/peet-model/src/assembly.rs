@@ -1545,19 +1545,64 @@ impl Assembly {
         Some(removed)
     }
 
+    /// Points the addresses in the assembly's equations (in every configuration) that
+    /// reach into the component called `old` at `new`.
+    pub fn rename_component_references(&mut self, old: &str, new: &str) {
+        let rename = |e: &str| crate::equations::rename_component(e, old, new);
+        for e in &mut self.equations {
+            if let Some(x) = rename(&e.expression) {
+                e.expression = x;
+            }
+        }
+        self.varying.rewrite_equations(rename);
+    }
+
     /// Makes a component an instance of another definition, where it is.
     pub fn replace(&mut self, id: CompId, definition: DefId) -> bool {
         if self.definition(definition).is_none() {
             return false;
         }
+        // A component named after its part (`Door-2`) is named after the new one
+        // (`Door Long-1`), as SolidWorks renames a component whose file is replaced.
+        let named_after_part = self.component(id).is_some_and(|c| {
+            self.definition(c.definition).is_some_and(|d| {
+                c.name
+                    .strip_prefix(d.name())
+                    .and_then(|n| n.strip_prefix('-'))
+                    .is_some_and(|n| n.parse::<u32>().is_ok())
+                    && d.name() != self.definition(definition).map_or("", Definition::name)
+            })
+        });
+        let renamed = named_after_part.then(|| self.component_name(definition));
+        // The configuration it shows is the new part's of the same name, if it has one,
+        // as SolidWorks' replace matches configurations by name.
+        let names: Vec<(crate::ConfigId, String)> = self
+            .component(id)
+            .and_then(|c| self.definition(c.definition))
+            .map(|d| {
+                d.model
+                    .configurations()
+                    .iter()
+                    .map(|c| (c.id, c.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let new_model = self.definition(definition).map(|d| d.model.clone());
+        let same = |old: crate::ConfigId| {
+            let (_, name) = names.iter().find(|(id, _)| *id == old)?;
+            new_model.as_ref()?.configuration_named(name).map(|c| c.id)
+        };
         let Some(c) = self.component_mut(id) else {
             return false;
         };
         c.definition = definition;
-        // Poses and the configuration are of the part it was.
+        if let Some(name) = renamed {
+            c.name = name;
+        }
+        // Poses are of the part it was.
         c.poses.clear();
-        c.configuration = None;
-        self.varying.forget_part(id);
+        c.configuration = c.configuration.and_then(same);
+        self.varying.forget_part(id, same);
         self.prune();
         true
     }
@@ -1630,15 +1675,16 @@ impl Assembly {
                     m.id.0
                 ));
             }
-            // An end on the assembly itself is on one of its standard planes or its
-            // origin; any other is on a component.
+            // An end on the assembly itself is on one of its planes or its origin; any
+            // other is on a component.
             let not_planes = |e: &crate::MateEnd| {
                 e.path.is_empty()
                     && !matches!(
                         e.geom,
                         Some(
-                            crate::MateGeom::Plane(crate::PlaneRef::Standard(_))
-                                | crate::MateGeom::Origin
+                            crate::MateGeom::Plane(
+                                crate::PlaneRef::Standard(_) | crate::PlaneRef::Feature(_)
+                            ) | crate::MateGeom::Origin
                         )
                     )
             };

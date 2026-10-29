@@ -312,6 +312,29 @@ struct Assembled {
 type PartKey = (DefId, Option<crate::ConfigId>);
 
 /// The part a component shows: its definition in the configuration it uses.
+/// The reference planes a model's own features made (built, not suppressed), as mate ends
+/// see them: in the model's own coordinates.
+fn own_planes(
+    model: &Model,
+    states: &HashMap<FeatureId, FeatureState>,
+) -> Vec<mate::ComponentPlane> {
+    model
+        .features()
+        .filter_map(|feature| {
+            let state = states.get(&feature.id)?;
+            if !matches!(state.status, Status::Ok | Status::Warning(_)) {
+                return None;
+            }
+            let plane = match state.output {
+                Output::Plane(p) => p,
+                Output::Frame(frame) => Plane { frame },
+                _ => return None,
+            };
+            Some((Vec::new(), PlaneRef::Feature(feature.id), plane))
+        })
+        .collect()
+}
+
 fn part_key(assembly: &crate::Assembly, c: &crate::Component) -> PartKey {
     (c.definition, assembly.configuration_of(c))
 }
@@ -479,7 +502,10 @@ impl Engine {
             }
         }
         self.cache.retain(|id, _| run.states.contains_key(id));
-        let mut assembled = self.assemble(model, &mut run.stats);
+        // An assembly's own reference planes (SolidWorks' planes inserted in the
+        // assembly): fixed ends for its mates, as its standard planes are.
+        let own = own_planes(model, &run.states);
+        let mut assembled = self.assemble(model, &mut run.stats, &own);
         // What the reference dimensions measure, which equations may read, and where the
         // geometry in-context parts follow is: a part an equation or an in-context
         // reference changes is rebuilt and the mates solved again, until nothing changes
@@ -505,7 +531,7 @@ impl Engine {
                 equation_failures = model.apply_equations();
                 model.sync_pattern_counts();
             }
-            assembled = self.assemble(model, &mut run.stats);
+            assembled = self.assemble(model, &mut run.stats, &own);
         }
         run.stats.ms = start.elapsed().as_secs_f64() * 1000.0;
         self.evaluation = Evaluation {
@@ -535,20 +561,7 @@ impl Engine {
             .into_iter()
             .map(|p| (Vec::new(), PlaneRef::Standard(p), p.plane()))
             .collect();
-        for feature in model.features() {
-            let Some(state) = self.evaluation.states.get(&feature.id) else {
-                continue;
-            };
-            if !matches!(state.status, Status::Ok | Status::Warning(_)) {
-                continue;
-            }
-            let plane = match state.output {
-                Output::Plane(p) => p,
-                Output::Frame(frame) => Plane { frame },
-                _ => continue,
-            };
-            planes.push((Vec::new(), PlaneRef::Feature(feature.id), plane));
-        }
+        planes.extend(own_planes(model, &self.evaluation.states));
         if let Some(assembly) = model.assembly() {
             for c in assembly.components().filter(|c| {
                 !c.suppressed
@@ -613,7 +626,12 @@ impl Engine {
     }
 
     /// Rebuilds definitions, solves mates and writes back solved placements.
-    fn assemble(&mut self, model: &mut Model, stats: &mut Stats) -> Assembled {
+    fn assemble(
+        &mut self,
+        model: &mut Model,
+        stats: &mut Stats,
+        own: &[mate::ComponentPlane],
+    ) -> Assembled {
         let Some(assembly) = model.assembly() else {
             self.parts.clear();
             self.drag = None;
@@ -765,11 +783,12 @@ impl Engine {
             .collect();
         let units: Vec<(CompId, bool)> = placed.iter().map(|c| (c.id, c.fixed)).collect();
         let planes: Vec<_> = placed.iter().map(|c| (c.id, &c.planes)).collect();
-        let key = hash::of(&(&mates, structure, units, &model.parameters, planes));
+        let key = hash::of(&(&mates, structure, units, &model.parameters, planes, own));
         let drag = self.drag.take();
         let solved = mate::solve(
             &mates,
             placed,
+            own,
             &model.parameters,
             key,
             &mut self.mates,

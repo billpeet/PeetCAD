@@ -939,9 +939,17 @@ impl Model {
         self.rollback = self.rollback.filter(|&b| b < self.features.len());
         self.refresh_dimension_values();
         self.validate_configurations()?;
-        if self.assembly.is_some() && !self.features.is_empty() {
+        // An assembly's own features are its reference planes (SolidWorks' planes inserted
+        // in an assembly), and nothing else.
+        if self.assembly.is_some()
+            && self
+                .features
+                .iter()
+                .any(|f| !matches!(f.kind, FeatureKind::Plane(_)))
+        {
             return Err(
-                "The model is damaged: it is an assembly, and has features of its own.".to_owned(),
+                "The model is damaged: it is an assembly, and has features other than reference planes."
+                    .to_owned(),
             );
         }
         if let Some(assembly) = self.assembly_mut() {

@@ -522,7 +522,15 @@ pub(crate) fn solve_body(
         });
     }
     let refs: Vec<&Mate> = joined.iter().collect();
-    let solved = solve(&refs, components, params, 0, &mut Memo::default(), None);
+    let solved = solve(
+        &refs,
+        components,
+        &[],
+        params,
+        0,
+        &mut Memo::default(),
+        None,
+    );
     for m in &joined {
         if let Some(Status::Failed(why)) = solved.statuses.get(&m.id) {
             failed.push((m.name.clone(), why.replace("components", "bodies")));
@@ -2783,6 +2791,7 @@ fn turned_over(frame: Frame, through: DVec3, axis: DVec3) -> Frame {
 pub(crate) fn solve(
     mates: &[&Mate],
     mut components: Vec<Placed>,
+    own_planes: &[ComponentPlane],
     params: &Parameters,
     key: u64,
     memo: &mut Memo,
@@ -2800,7 +2809,9 @@ pub(crate) fn solve(
         .map(CompId)
         .find(|id| components.iter().all(|c| c.id != *id))
         .expect("an unused id");
-    components.push(Placed::assembly(ground));
+    let mut assembly = Placed::assembly(ground);
+    assembly.planes.extend(own_planes.iter().cloned());
+    components.push(assembly);
     let index: HashMap<CompId, usize> = components
         .iter()
         .enumerate()

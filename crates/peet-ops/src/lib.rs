@@ -520,7 +520,7 @@ fn help() -> Map<String, Value> {
             "plane": "\"top\", \"front\", \"right\", a reference plane's name, or a face selector",
             "axis": "\"x\", \"y\", \"z\", a reference axis's name, or an edge selector",
             "point": "\"origin\", a reference point's name, or a vertex selector",
-            "face": "{at: [x,y,z], normal: [x,y,z], feature, side: start|end|side|top|bottom|bend|wall, body, index}: all given fields must match exactly one face",
+            "face": "{name, at: [x,y,z], normal: [x,y,z], feature, side: start|end|side|top|bottom|bend|wall, body, index, ray: {from: [x,y,z], direction: [x,y,z]} (the first face it meets)}: all given fields must match exactly one face",
             "edge": "{between: [[x,y,z],[x,y,z]], at: [x,y,z], faces: [face, face], body, index}",
             "vertex": "{at: [x,y,z], body, index}",
         }),
@@ -1067,6 +1067,132 @@ fn run(host: &mut dyn Host, doc: &mut Document, op: &Op) -> Result<Done, String>
             done.data =
                 library::set_check_rule(host.check_rules(), *rule, *thickness, *radius, *constant)?;
             return Ok(done);
+        }
+        Op::SheetMetal {
+            component,
+            feature,
+            thickness,
+            radius,
+            bend,
+        } => {
+            use library::GaugeBend;
+            use peet_sheetmetal::BendModel;
+            let units = doc.model.parameters.units;
+            let mm = |v: Option<f64>| v.map(|v| units.to_mm(v));
+            let bend = bend.map(|b| match b {
+                GaugeBend::KFactor(k) => BendModel::KFactor(k),
+                GaugeBend::Allowance(v) => BendModel::Allowance(units.to_mm(v)),
+                GaugeBend::Deduction(v) => BendModel::Deduction(units.to_mm(v)),
+            });
+            if thickness.is_none() && radius.is_none() && bend.is_none() {
+                return Err("'sheet_metal' needs a 'thickness', a 'radius' or a 'bend'.".to_owned());
+            }
+            match (component, doc.is_assembly()) {
+                (Some(c), true) => {
+                    let id = c.resolve(doc)?;
+                    let assembly = doc
+                        .model
+                        .assembly()
+                        .ok_or_else(|| "The document is not an assembly.".to_owned())?;
+                    let name = assembly.name_of(id).to_owned();
+                    let def = assembly
+                        .definition_of(id)
+                        .ok_or_else(|| "The component's part is gone.".to_owned())?;
+                    let def_id = def.id;
+                    let mut part = (*def.model).clone();
+                    let (_, now) = library::sheet_metal(
+                        &mut part,
+                        &units,
+                        feature.as_ref(),
+                        mm(*thickness),
+                        mm(*radius),
+                        bend,
+                    )
+                    .map_err(|e| format!("{name}: {e}"))?;
+                    if let Some(a) = model.assembly_mut() {
+                        a.set_model(def_id, std::sync::Arc::new(part));
+                    }
+                    done.data = object(now);
+                    if let Some(file) = equations::write_link(doc, &model, def_id)? {
+                        done.data
+                            .insert("written".to_owned(), json!(file.display().to_string()));
+                    }
+                    done.component = Some(id);
+                    format!("Set Sheet Metal of {name}")
+                }
+                (None, true) => {
+                    return Err(format!(
+                        "{} is an assembly: give 'component', the component whose part's sheet metal to set.",
+                        doc.title()
+                    ));
+                }
+                (Some(_), false) => {
+                    return Err(format!(
+                        "{} is a part: 'component' is for an assembly. Leave it out to set this part's sheet metal.",
+                        doc.title()
+                    ));
+                }
+                (None, false) => {
+                    let (id, now) = library::sheet_metal(
+                        &mut model,
+                        &units,
+                        feature.as_ref(),
+                        mm(*thickness),
+                        mm(*radius),
+                        bend,
+                    )?;
+                    done.feature = Some(id);
+                    done.data = object(now);
+                    format!("Set Sheet Metal of {}", model.name_of(id))
+                }
+            }
+        }
+        Op::Rebuild => {
+            doc.force_rebuild();
+            done.data = object(query::status(doc));
+            return Ok(done);
+        }
+        Op::SolidworksPlanes => {
+            use peet_model::{AxisRef, PlaneDef, PlaneRef, Scalar, StdAxis, StdPlane};
+            let planes = [
+                (
+                    "Front Plane",
+                    PlaneDef::Offset {
+                        from: PlaneRef::Standard(StdPlane::Top),
+                        distance: Scalar::new(0.0),
+                        flip: false,
+                    },
+                ),
+                (
+                    "Top Plane",
+                    PlaneDef::Angled {
+                        from: PlaneRef::Standard(StdPlane::Front),
+                        about: AxisRef::Standard(StdAxis::X),
+                        angle: Scalar::new(180.0),
+                    },
+                ),
+                (
+                    "Right Plane",
+                    PlaneDef::Offset {
+                        from: PlaneRef::Standard(StdPlane::Right),
+                        distance: Scalar::new(0.0),
+                        flip: false,
+                    },
+                ),
+            ];
+            for (name, def) in planes {
+                if model.features().any(|f| f.name == name) {
+                    continue;
+                }
+                let id = model.add(FeatureKind::Plane(def));
+                rename(&mut model, id, name)?;
+                done.created.push(id);
+            }
+            if done.created.is_empty() {
+                done.data.insert("added".to_owned(), json!([]));
+                return Ok(done);
+            }
+            "Add SolidWorks Planes".to_owned()
         }
         Op::ApplyMaterial {
             material,

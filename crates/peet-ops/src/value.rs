@@ -261,6 +261,34 @@ pub struct FaceQuery {
     pub body: Option<usize>,
     /// Its number in the body, from the `faces` query. Only valid until the part changes.
     pub index: Option<u32>,
+    /// The first face a ray from a point along a direction meets (SolidWorks' select by
+    /// ray, as FabSys picks faces).
+    pub ray: Option<Ray>,
+}
+
+/// A ray: from a point, along a direction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ray {
+    pub from: [f64; 3],
+    pub direction: [f64; 3],
+}
+
+impl Ray {
+    fn parse(v: &Value) -> Result<Self, String> {
+        let map = fields(v, "A ray", &["from", "direction"])?;
+        let wrong =
+            || format!("a ray is {{\"from\": [x, y, z], \"direction\": [x, y, z]}}, not {v}");
+        let from = field(map, "from", coordinates::<3>)?.ok_or_else(wrong)?;
+        let direction = field(map, "direction", coordinates::<3>)?.ok_or_else(wrong)?;
+        if direction.iter().all(|d| *d == 0.0) {
+            return Err("a ray's direction can't be [0, 0, 0]".to_owned());
+        }
+        Ok(Self { from, direction })
+    }
+
+    fn json(&self) -> Value {
+        json!({ "from": self.from, "direction": self.direction })
+    }
 }
 
 impl FaceQuery {
@@ -268,9 +296,12 @@ impl FaceQuery {
         let map = fields(
             v,
             "A face",
-            &["name", "at", "normal", "feature", "side", "body", "index"],
+            &[
+                "name", "at", "normal", "feature", "side", "body", "index", "ray",
+            ],
         )?;
         Ok(Self {
+            ray: field(map, "ray", Ray::parse)?,
             name: field(map, "name", |v| text(v).map(str::to_owned))?,
             at: field(map, "at", coordinates::<3>)?,
             normal: field(map, "normal", coordinates::<3>)?,
@@ -303,6 +334,9 @@ impl FaceQuery {
         }
         if let Some(i) = self.index {
             m.insert("index".to_owned(), json!(i));
+        }
+        if let Some(r) = &self.ray {
+            m.insert("ray".to_owned(), r.json());
         }
         Value::Object(m)
     }
@@ -529,13 +563,25 @@ impl From<PlaneRef> for PlaneSel {
 }
 
 impl PlaneSel {
+    /// The standard plane a word names: "front", "Top", "Right Plane".
+    pub(crate) fn standard_word(s: &str) -> Option<StdPlane> {
+        match s.trim().to_lowercase().trim_end_matches(" plane") {
+            "front" => Some(StdPlane::Front),
+            "top" => Some(StdPlane::Top),
+            "right" => Some(StdPlane::Right),
+            _ => None,
+        }
+    }
+
     pub(crate) fn parse(v: &Value) -> Result<Self, String> {
         if let Value::String(s) = v {
-            match s.to_lowercase().trim_end_matches(" plane") {
-                "front" => return Ok(Self::Standard(StdPlane::Front)),
-                "top" => return Ok(Self::Standard(StdPlane::Top)),
-                "right" => return Ok(Self::Standard(StdPlane::Right)),
-                _ => {}
+            // "Front Plane" is the reference plane of that name where the document has
+            // one (made by 'solidworks_planes': SolidWorks' Front Plane), else the
+            // standard plane (see `select::plane`).
+            if let Some(p) = Self::standard_word(s)
+                && !s.trim().to_lowercase().ends_with(" plane")
+            {
+                return Ok(Self::Standard(p));
             }
         }
         if v.is_object() {

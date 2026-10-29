@@ -33,7 +33,10 @@ A file becomes an assembly by its script starting with `{"op": "new", "assembly"
   documents).
 - `sample`: a sample part.
 
-Components are named after their part: `Bracket-1`, `Bracket-2`. Pass `name` to choose.
+Components are named after their part, `Bracket-1`, `Bracket-2`, with the lowest number
+free; a part inserted from a file is called after the file, as SolidWorks names it (`J123
+AL3 Door.peet` gives `J123 AL3 Door-1`, whatever the part was called where it was made).
+Pass `name` to choose.
 The reply's `component` has its name, where it is, and `min` and `max`: the box it
 occupies in the assembly. Check those against where it should be.
 
@@ -371,6 +374,48 @@ face is kept parallel to that face. Here the tab goes to X = 25, 17.5, then 14:
 The block's underside goes onto the assembly's top plane with its origin at the
 assembly's; the disc's bottom edge lies on the block's top and its axis goes through the
 sketch point (10, 5).
+
+### Planes made in the assembly, SolidWorks' planes, faces found by a ray
+
+Use these when components are placed against the assembly's own layout (SolidWorks'
+`InsertPlane` in an assembly, as FabSys lays out an enclosure), or the face to mate is
+known only by where it is in the assembly.
+
+```jsonl
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [100, 60]}]}
+{"op": "extrude", "sketch": "Sketch1", "depth": 6}
+{"op": "new", "assembly": true, "keep": true}
+{"op": "solidworks_planes"}
+{"op": "plane", "from": "Top Plane", "distance": -400, "name": "EnclBasePlane"}
+{"op": "insert", "part": 1, "name": "Floor"}
+{"op": "insert", "part": 1, "name": "Shelf", "at": [0, 300, 300]}
+{"op": "mate", "type": "coincident", "a": {"component": "Shelf", "face": {"normal": [0, -1, 0]}}, "b": {"plane": "EnclBasePlane"}}
+{"op": "mate", "type": "distance", "distance": 25, "a": {"plane": "Front Plane"}, "b": {"component": "Shelf", "face": {"normal": [0, 0, -1]}}}
+{"op": "insert", "part": 1, "name": "Lid", "at": [300, 0, 0]}
+{"op": "mate", "type": "coincident", "a": {"face": {"ray": {"from": [50, 30, 500], "direction": [0, 0, -1]}}}, "b": {"component": "Lid", "face": {"normal": [0, 0, -1]}}}
+{"op": "mates"}
+{"op": "components"}
+```
+
+The shelf's side goes to Y = -400 (400 below SolidWorks' Top Plane, along -Y) with its
+underside 25 in front of the Front Plane (Z = 25); the lid lands on the floor, the first
+face the ray meets.
+
+- **`plane` works in an assembly** (offset, angled, mid plane, from the assembly's
+  planes), as do `features`, `edit`, `rename` and `delete` on what it makes. A mate end
+  `{"plane": NAME}` with no `component` is on it; it doesn't move.
+- **`solidworks_planes`** adds SolidWorks' three standard planes as reference planes
+  called `Front Plane`, `Top Plane` and `Right Plane`, oriented as SolidWorks has them.
+  Use it in a document converted from SolidWorks (its coordinates are SolidWorks': Y
+  up): there SolidWorks' Front Plane is PeetCAD's `top`, and its Top Plane is PeetCAD's
+  `front` turned to face +Y. `"Front Plane"` (with ` Plane`) means the reference plane
+  of that name where there is one, else PeetCAD's own; `front`, `top`, `right` are
+  always PeetCAD's. It skips planes the document already has.
+- **`{"face": {"ray": {"from": [x, y, z], "direction": [x, y, z]}}}` with no
+  `component`** is the first face of any component the ray meets, in the assembly's
+  coordinates (SolidWorks' select by ray); the reply's end says which component. Hidden
+  and suppressed components are passed through. With a `component`, the ray is in that
+  part's coordinates (`peet skills selectors`).
 
 ### Slot, limit and symmetric mates
 
@@ -717,6 +762,16 @@ are.
 `rename`, `suppress`, `show` and `delete` take `component` instead of `feature`.
 `replace` makes a component an instance of another part, where it is. Deleting the last
 component of a part removes the part from the assembly.
+
+- **`replace` with `path` and `"link": true`** points the component at that file, as
+  SolidWorks' replace components does: use it to swap a template's component for the
+  job's copy of its file. The component keeps its mates (its new part's faces are
+  found as the old part's were, so a copy of the same part fits exactly) and shows the
+  new part's configuration of the same name. A component named after its part
+  (`Door-2`) is renamed after the new one (`J1 Door-1`), and the assembly's equations
+  and parameters that read it (`"Width@Sketch1@Door-2"`) read the new name; one given
+  its own name keeps it. Without `link` the part is copied into the assembly.
+- Only `path` can be linked; `"absolute": true` keeps the link a full path.
 
 ## Showing, hiding, colouring, exploding
 
