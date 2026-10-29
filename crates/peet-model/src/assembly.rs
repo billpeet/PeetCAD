@@ -46,6 +46,12 @@ pub struct Link {
 }
 
 /// A path without its `.` and `..` steps, as far as that can be told from the text.
+/// A folder in full: a file opened by a relative path has its links made full, and
+/// written relative, from where it really is (not twice relative to the working folder).
+fn full(folder: &Path) -> PathBuf {
+    std::path::absolute(folder).unwrap_or_else(|_| folder.to_owned())
+}
+
 fn tidy(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
@@ -98,8 +104,10 @@ impl Model {
     /// nowhere yet), or where there is no way across, they stay full paths.
     #[must_use]
     pub fn for_file(&self, folder: Option<&Path>) -> Self {
+        let folder = folder.map(full);
         self.with_links(&|link| {
             let relative = folder
+                .as_deref()
                 .filter(|_| link.relative)
                 .and_then(|folder| relative_to(Path::new(&link.path), folder));
             relative.map(|path| Link {
@@ -111,9 +119,10 @@ impl Model {
 
     /// Makes the links of a model read from a file in `folder` full paths again.
     pub fn from_file(&mut self, folder: Option<&Path>) {
+        let folder = folder.map(full);
         *self = self.with_links(&|link| {
             let path = Path::new(&link.path);
-            let folder = folder.filter(|_| !path.is_absolute())?;
+            let folder = folder.as_deref().filter(|_| !path.is_absolute())?;
             Some(Link {
                 path: tidy(&folder.join(path)).to_string_lossy().into_owned(),
                 relative: link.relative,
@@ -1970,6 +1979,18 @@ mod tests {
                 full("backup/lib/nut.peet")
             ]
         );
+        // A file opened and saved by a relative path: its links are relative to where it
+        // is, not twice relative to the working folder.
+        let cwd = std::env::current_dir().unwrap();
+        let rel = |p: &str| {
+            relative_to(&at(p), &cwd)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| at(p))
+        };
+        let mut opened = written.clone();
+        opened.from_file(Some(&rel("job")));
+        assert_eq!(opened, model);
+        assert_eq!(paths(&opened.for_file(Some(&rel("job")))), paths(&written));
         // With no folder there is nothing to be relative to.
         assert_eq!(model.for_file(None), model);
         let mut nowhere = written;
