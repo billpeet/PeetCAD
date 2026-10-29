@@ -1210,6 +1210,32 @@ function importPatterns(peet, cfg, report, byPath, want, placeOf, insertPlain) {
  * the scope every component it reaches unless SolidWorks lists some. The other assembly-level features are
  * reported: layout sketches, composite curves and in-context feature holders (which PeetCAD's parts don't have).
  */
+/**
+ * The assembly's own reference planes (FabSys mates to GTBackMountPlane, Esc Mid), where SolidWorks has them: an
+ * offset of a standard plane, fixed (SolidWorks' follows the component face it was made on).
+ */
+function importPlanes(peet, cfg, report, local) {
+  const rows = [];
+  for (const f of cfg.features || []) {
+    if (f.type !== "RefPlane" || !f.planeTransform || /^(Front|Top|Right) Plane$/.test(f.name)) continue;
+    const row = { plane: f.name };
+    rows.push(row);
+    let m = matrixOf(f.planeTransform);
+    if (local) m = then(m, local);
+    const n = m.R[2], o = m.t.map(v => v * MM);
+    const axes = [["right", [1, 0, 0]], ["front", [0, -1, 0]], ["top", [0, 0, 1]]];
+    const axis = axes.find(([, d]) => Math.abs(Math.abs(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) - 1) < 1e-6);
+    if (!axis) { row.result = "left out"; row.why = "not square to an axis of the assembly"; continue; }
+    const distance = axis[1][0] * o[0] + axis[1][1] * o[1] + axis[1][2] * o[2];
+    const made = peet.apply({ op: "plane", from: axis[0], distance: tidy(Math.abs(distance)), flip: distance < 0, name: f.name.trim() });
+    row.result = made.ok ? "imported" : "failed";
+    if (!made.ok) row.why = made.error;
+    else row.note = "a fixed offset of the assembly's " + axis[0] + " plane";
+    if (f.suppressed && made.ok) peet.apply({ op: "suppress", feature: f.name.trim() });
+  }
+  if (rows.length) report.planes = rows;
+}
+
 function importAssemblyFeatures(peet, cfg, report, byPath, want, local) {
   const rows = [];
   const all = [];
@@ -1768,6 +1794,9 @@ function importAssembly(name, exp, outFile, listed = null, frame = null) {
   // Assembly features: cuts with their sketches, after the mates (SolidWorks works them out after the mates);
   // what else the tree has at assembly level is reported
   if (cfg) importAssemblyFeatures(peet, cfg, report, byPath, want, local);
+  if (cfg) importPlanes(peet, cfg, report, local);
+  // SolidWorks' own Front, Top and Right Plane, as SolidWorks orients them: FabSys mates to them by name
+  peet.apply({ op: "solidworks_planes" });
 
   // Display states and the components' looks (format 8): only how the assembly is drawn
   if (cfg) importDisplayStates(peet, exp, cfg, report);

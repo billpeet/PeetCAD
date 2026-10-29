@@ -360,9 +360,10 @@ function importPart(doc, dir) {
     if (!reply.ok) return { ok: false, message: reply.error };
     const created = reply.created || [];
     const failed = created.filter(c => c.status === "failed");
-    // A feature suppressed everywhere in SolidWorks whose cut lies off the part at these sizes (Escutcheon's
-    // third hinge's holes, below the part until it is 1500 tall) is kept, suppressed, as SolidWorks keeps it
-    if (failed.length && asleepNow && failed.every(c => /doesn't remove any material: its shape is off/.test(c.message || ""))
+    // A feature suppressed everywhere in SolidWorks that removes nothing here (Escutcheon's third hinge's
+    // holes, below the part until it is 1500 tall; a cut whose way into the sheet nothing shows) is kept,
+    // suppressed, as SolidWorks keeps it, so that FabSys can name it
+    if (failed.length && asleepNow && failed.every(c => /doesn't remove any material/.test(c.message || ""))
       && created.every(c => peet.apply({ op: "suppress", feature: c.name, on: true, configurations: "all" }).ok)) {
       return { ok: true, names: created.map(c => c.name), warning: `it can't be built at these sizes (${failed[0].message}), as in SolidWorks, where it is suppressed` };
     }
@@ -3090,6 +3091,7 @@ function importPart(doc, dir) {
         planes.set(f.name, standard);
         // (SolidWorks' own three are PeetCAD's standard planes, under other names)
         if (f.suppressed || /^(Front|Top|Right) Plane$/.test(f.name)) return;
+        if (/^(front|top|right)$/i.test(f.name.trim())) return record(f, "not supported", `a plane called ${f.name} is PeetCAD's standard plane of that name`);
         const name = f.name.trim();
         const made = peet.apply({ op: "plane", from: standard, distance: 0, name });
         if (!made.ok) return record(f, "failed", made.error);
@@ -4322,6 +4324,8 @@ function importPart(doc, dir) {
   report.difference = { volume: volumeOff, box_mm: boxOff, flat_mm: flatOff };
   const left = report.features.filter(x => x.result === "not supported" || x.result === "failed");
   report.failures = (peet.ask({ op: "status" }).failures || []).map(x => `${x.name}: ${x.message}`);
+  // SolidWorks' own Front, Top and Right Plane, as SolidWorks orients them: FabSys mates to them by name
+  peet.apply({ op: "solidworks_planes" });
   report.verdict =
     bodies.length === 0 ? "nothing built"
       : volumeOff !== null && volumeOff < 1e-5 && boxOff < 1e-3 && (flatOff === null || flatOff < 1e-2) ? (left.length ? "matches, with features left out" : "matches")
