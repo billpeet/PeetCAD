@@ -1227,7 +1227,20 @@ function importPlanes(peet, cfg, report, local) {
     const axis = axes.find(([, d]) => Math.abs(Math.abs(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) - 1) < 1e-6);
     if (!axis) { row.result = "left out"; row.why = "not square to an axis of the assembly"; continue; }
     const distance = axis[1][0] * o[0] + axis[1][1] * o[1] + axis[1][2] * o[2];
-    const made = peet.apply({ op: "plane", from: axis[0], distance: tidy(Math.abs(distance)), flip: distance < 0, name: f.name.trim() });
+    // Facing the way SolidWorks' does (FabSys mates to it aligned or anti-aligned): where that is against the
+    // standard plane's normal, it is offset from that plane turned half round an axis in it
+    const against = axis[1][0] * n[0] + axis[1][1] * n[1] + axis[1][2] * n[2] < 0;
+    const turn = { op: "plane", from: axis[0], about: { right: "z", front: "z", top: "x" }[axis[0]], angle: 180 };
+    let made;
+    if (!against) made = peet.apply({ op: "plane", from: axis[0], distance: tidy(Math.abs(distance)), flip: distance < 0, name: f.name.trim() });
+    else if (Math.abs(distance) < 1e-9) made = peet.apply({ ...turn, name: f.name.trim() });
+    else {
+      const turned = f.name.trim() + " turned";
+      made = peet.apply({ ...turn, name: turned });
+      // The turned plane's normal is against the standard plane's: the distance along it is the other way
+      if (made.ok) made = peet.apply({ op: "plane", from: turned, distance: tidy(Math.abs(distance)), flip: distance > 0, name: f.name.trim() });
+      if (made.ok && f.suppressed) peet.apply({ op: "suppress", feature: turned });
+    }
     row.result = made.ok ? "imported" : "failed";
     if (!made.ok) row.why = made.error;
     else row.note = "a fixed offset of the assembly's " + axis[0] + " plane";
