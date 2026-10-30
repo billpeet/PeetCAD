@@ -348,26 +348,14 @@ pub(crate) fn suppress_feature(
             assembly.name_of(c)
         ));
     }
-    let id = part
-        .features()
-        .find(|f| f.name == rest)
-        .or_else(|| {
-            let mut alike = part
-                .features()
-                .filter(|f| f.name.eq_ignore_ascii_case(&rest));
-            match (alike.next(), alike.next()) {
-                (Some(f), None) => Some(f),
-                _ => None,
-            }
-        })
-        .map(|f| f.id)
-        .ok_or_else(|| {
-            format!(
-                "{} (the part of {}) has no feature called '{rest}'.",
-                part.name,
-                assembly.name_of(c)
-            )
-        })?;
+    let found = part.features_named(&rest);
+    let id = found.first().map(|f| f.id).ok_or_else(|| {
+        format!(
+            "{} (the part of {}) has no feature called '{rest}'.",
+            part.name,
+            assembly.name_of(c)
+        )
+    })?;
     part.set_suppressed(id, on, &peet_model::Scope::default())?;
     let label = format!(
         "{} {} of {}",

@@ -2100,6 +2100,58 @@ fn dimension_value(
     Ok(Quantity::new(value, kind))
 }
 
+/// A negative value for a distance from a line, or a horizontal or vertical distance,
+/// reverses the dimension, as SolidWorks does: the geometry goes to the other side, and
+/// the dimension keeps the value without its sign. Returns the value it now has, or
+/// `None` if the value is not one of these (to be taken, or refused, as any other).
+fn reversed(
+    sketch: &mut Sketch,
+    id: ConstraintId,
+    q: Quantity,
+    units: &Units,
+) -> Result<Option<f64>, ExprError> {
+    use crate::sketch::ConstraintKind as K;
+    let Some(c) = sketch.constraint(id) else {
+        return Ok(None);
+    };
+    let is_point = |e| sketch.try_point(e).is_some();
+    let sided = match c.kind {
+        K::Distance(a, b) | K::DoubledDistance(a, b) => !(is_point(a) && is_point(b)),
+        K::HorizontalDistance(..) | K::VerticalDistance(..) => true,
+        _ => false,
+    };
+    let kind = dimension_kind(sketch, id);
+    let value = q.expect_for("this dimension", kind, units)?;
+    if !sided || !value.is_finite() || value >= 0.0 {
+        return Ok(None);
+    }
+    let value = -value;
+    check_dimension_value(sketch, id, value, units)?;
+    // Solved once with the value negative, which the equations take as the other side
+    // of where the geometry is now; from there on the value is positive, and the side
+    // is where the geometry is.
+    let before = sketch.clone();
+    let set = |sketch: &mut Sketch, v: f64| {
+        let d = sketch
+            .constraint_mut(id)
+            .and_then(|c| c.dimension.as_mut())
+            .expect("a dimension");
+        d.value = v;
+        d.expression = None;
+    };
+    set(sketch, -value);
+    let report = crate::solver::Solver::new().solve(sketch);
+    set(sketch, value);
+    if !report.converged {
+        *sketch = before;
+        return Err(ExprError::new(format!(
+            "reversed to the other side ({}), the sketch can't be solved",
+            units.format_length(-value)
+        )));
+    }
+    Ok(Some(value))
+}
+
 /// Every dimension: (id, name, expression).
 fn dimension_table(sketch: &Sketch) -> Vec<(ConstraintId, &str, Option<&str>)> {
     sketch
@@ -2205,6 +2257,9 @@ pub fn set_dimension_input(
     let input = input.trim();
     let (value, expression) = if is_literal(input) {
         let q = Expr::parse(input)?.eval_quantity(&params.units, &|_| None)?;
+        if let Some(value) = reversed(sketch, dimension, q, &params.units)? {
+            return Ok(value);
+        }
         let q = dimension_value(sketch, dimension, q, &params.units)?;
         (q.value, None)
     } else {

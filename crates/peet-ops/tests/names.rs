@@ -104,10 +104,12 @@ fn names_refuse_collisions_wrong_kinds_and_missing_geometry() {
         )
         .contains("not an edge")
     );
-    error(
+    // As in SolidWorks, a name is found in any case where only one is alike.
+    ok(
         &mut doc,
         json!({"op":"sketch","on":{"name":"front"},"draw":[]}),
     );
+    ok(&mut doc, json!({"op":"undo"}));
     error(
         &mut doc,
         json!({"op":"sketch","on":{"name":"Front","normal":[0,0,-1]},"draw":[]}),

@@ -77,6 +77,16 @@ impl MateSel {
             Self::Name(name) => assembly
                 .mates()
                 .find(|m| m.name == *name)
+                .or_else(|| {
+                    // As in SolidWorks, in any case where only one mate has the name.
+                    let mut alike = assembly
+                        .mates()
+                        .filter(|m| m.name.eq_ignore_ascii_case(name));
+                    match (alike.next(), alike.next()) {
+                        (Some(m), None) => Some(m),
+                        _ => None,
+                    }
+                })
                 .map(|m| m.id)
                 .ok_or_else(|| format!("There is no mate called '{name}'. {}", names())),
         }

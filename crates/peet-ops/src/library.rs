@@ -80,8 +80,8 @@ pub(crate) fn sheet_metal(
             .map(|f| f.id)
             .ok_or_else(|| format!("{} has no feature with the id {}.", part.name, id.0))?,
         Some(crate::value::FeatureSel::Name(name)) => part
-            .features()
-            .find(|f| f.name == *name)
+            .features_named(name)
+            .first()
             .map(|f| f.id)
             .ok_or_else(|| format!("{} has no feature called '{name}'.", part.name))?,
         None => part

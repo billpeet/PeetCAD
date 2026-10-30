@@ -61,7 +61,9 @@ Done when `status` shows `"failures": []` and `bodies` has the sizes that were a
   (`set_parameter`) for sizes that may change: features follow them.
 - **Names.** Features are named as they are added (`Sketch1`, `Extrude1`, `Cut-Extrude1`,
   `Edge-Flange1`); the reply's `created` gives the name. Pass `name` to choose one, and
-  refer to a feature by name.
+  refer to a feature by name. As in SolidWorks, a feature's (or a reference plane's,
+  a mate's, a component's) name is found in any case where only one is alike
+  (`"wiv mid plane"` finds `WIV Mid Plane`).
 - **`field=value` on the command line** is JSON if it reads as JSON (`depth=8`,
   `flip=true`) and text otherwise (`depth=2mm`). Operations with nested JSON (`draw`
   lists, selectors) go in a script file or standard input (`peet run - -f PART.peet`),
@@ -125,7 +127,9 @@ SolidWorks.
 - `set` sets a dimension by address, or a parameter by name, to a number or an
   expression. It takes `configurations` as `edit` does. A reference (driven) dimension
   can't be set. As in SolidWorks, an address's case doesn't matter when only one
-  dimension matches it (`Width@Sketch1` finds `width@Sketch1`).
+  dimension matches it (`Width@Sketch1` finds `width@Sketch1`). A negative number
+  reverses a distance in a sketch, as SolidWorks does: the geometry goes to the other
+  side (see the sketching skill).
 - A parameter's name is a word, or any text without `"` or `@`, as SolidWorks names its
   global variables (`Base Height`, `50.00mm-`). Quote a name that isn't a word in an
   expression: `"Base Height" / 2`. `set` takes it unquoted.

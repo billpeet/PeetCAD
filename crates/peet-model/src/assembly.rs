@@ -1588,6 +1588,10 @@ impl Assembly {
             })
             .unwrap_or_default();
         let new_model = self.definition(definition).map(|d| d.model.clone());
+        let old_model = self
+            .component(id)
+            .and_then(|c| self.definition(c.definition))
+            .map(|d| d.model.clone());
         let same = |old: crate::ConfigId| {
             let (_, name) = names.iter().find(|(id, _)| *id == old)?;
             new_model.as_ref()?.configuration_named(name).map(|c| c.id)
@@ -1599,8 +1603,27 @@ impl Assembly {
         if let Some(name) = renamed {
             c.name = name;
         }
-        // Poses are of the part it was.
-        c.poses.clear();
+        // Poses are of the sub-assembly it was: those of components the new one has too
+        // (by the same path: a copy of its file, whose parts may have been replaced in
+        // turn) are kept, as SolidWorks keeps a flexible sub-assembly's positions when
+        // it is replaced by a copy. They are where the solve starts from.
+        let has = |model: &Option<Arc<crate::Model>>, path: &[CompId]| {
+            let Some(mut model) = model.clone() else {
+                return false;
+            };
+            for step in path {
+                let Some(next) = model.assembly().and_then(|a| {
+                    let c = a.component(*step)?;
+                    Some(a.definition(c.definition)?.model.clone())
+                }) else {
+                    return false;
+                };
+                model = next;
+            }
+            true
+        };
+        c.poses
+            .retain(|p| has(&old_model, &p.path) && has(&new_model, &p.path));
         c.configuration = c.configuration.and_then(same);
         self.varying.forget_part(id, same);
         self.prune();

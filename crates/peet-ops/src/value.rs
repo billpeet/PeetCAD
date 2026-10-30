@@ -135,8 +135,8 @@ impl FeatureSel {
                 .map(|f| f.id)
                 .ok_or_else(|| format!("There is no feature with the id {}.", id.0)),
             Self::Name(name) => {
-                let mut found = doc.model.features().filter(|f| f.name == *name);
-                match (found.next(), found.next()) {
+                let found = doc.model.features_named(name);
+                match (found.first(), found.get(1)) {
                     (Some(f), None) => Ok(f.id),
                     (Some(_), Some(_)) => Err(format!(
                         "Several features are called '{name}': refer to the one you mean by its id."

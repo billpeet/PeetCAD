@@ -111,8 +111,9 @@ Assign names when later scripts need a particular face or edge, such as a mating
 or a hinge hole. First build the geometry and select it with the usual selectors.
 `name_face` accepts flat and curved faces; `name_edge` accepts edges. Use
 `{"name": "Front"}` wherever a face selector is accepted, including sketch planes
-and mate ends. A named curved face still cannot be a sketch plane. Names are
-case-sensitive and unique across faces and edges in a part. Several names can point
+and mate ends. A named curved face still cannot be a sketch plane. Names are unique
+across faces and edges in a part; as in SolidWorks, a name is found in any case where
+only one is alike (`{"name": "corner"}` finds `Corner`). Several names can point
 to the same geometry. `faces` and `edges` report the names in their `names` arrays.
 
 ```jsonl
@@ -122,7 +123,7 @@ to the same geometry. `faces` and `edges` report the names in their `names` arra
 {"op": "name_edge", "edge": {"between": [[0, 0, 0], [0, 0, 8]]}, "name": "Corner"}
 {"op": "edit", "feature": "Extrude1", "depth": 12}
 {"op": "sketch", "on": {"name": "Front"}, "draw": [{"type": "circle", "center": [40, 25], "radius": 5}]}
-{"op": "measure", "a": {"edge": {"name": "Corner"}}}
+{"op": "measure", "a": {"edge": {"name": "corner"}}}
 {"op": "faces"}
 {"op": "delete_name", "name": "Corner"}
 ```
