@@ -3199,13 +3199,13 @@ pub(crate) fn solve(
                         MateKind::Distance(_) | MateKind::LimitDistance { .. }
                     ) {
                         let world = |i: usize, v: DVec3| components[i].frame.vector_to_world(v);
-                        if let Some(p) = square_edge(ends[END_A], a, b, |d, n| {
-                            world(ia, d).dot(world(ib, n))
-                        }) {
+                        if let Some(p) =
+                            square_edge(ends[END_A], a, b, |d, n| world(ia, d).dot(world(ib, n)))
+                        {
                             a = p;
-                        } else if let Some(p) = square_edge(ends[END_B], b, a, |d, n| {
-                            world(ib, d).dot(world(ia, n))
-                        }) {
+                        } else if let Some(p) =
+                            square_edge(ends[END_B], b, a, |d, n| world(ib, d).dot(world(ia, n)))
+                        {
                             b = p;
                         }
                     }

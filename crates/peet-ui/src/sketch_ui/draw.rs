@@ -562,7 +562,9 @@ fn dimension_text(kind: &ConstraintKind, value: f64) -> String {
     match kind {
         ConstraintKind::Radius(_) => format!("R{}", super::dim_value_text(kind, value)),
         ConstraintKind::Diameter(_) => format!("Ø{}", super::dim_value_text(kind, value)),
-        ConstraintKind::Angle(..) | ConstraintKind::SupplementaryAngle(..) => format!("{}°", super::dim_value_text(kind, value)),
+        ConstraintKind::Angle(..) | ConstraintKind::SupplementaryAngle(..) => {
+            format!("{}°", super::dim_value_text(kind, value))
+        }
         _ => super::dim_value_text(kind, value),
     }
 }

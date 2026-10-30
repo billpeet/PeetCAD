@@ -210,7 +210,10 @@ fn a_supplementary_angle_holds_the_value_solidworks_shows() {
             b[0].as_f64().unwrap() - a[0].as_f64().unwrap(),
             b[1].as_f64().unwrap() - a[1].as_f64().unwrap(),
         ];
-        (d[1].atan2(d[0]).to_degrees().abs(), f["dimensions"][1]["value"].clone())
+        (
+            d[1].atan2(d[0]).to_degrees().abs(),
+            f["dimensions"][1]["value"].clone(),
+        )
     };
     let (turn, value) = slope(&mut doc);
     assert!((turn - 45.0).abs() < 1e-6, "{turn}");
