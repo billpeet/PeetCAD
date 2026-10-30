@@ -159,13 +159,19 @@ fn a_seed_that_left_no_faces_of_its_own_is_where_its_sketch_puts_it() {
                    "up_to":{"plane":"End"}, "up_to_offset":2}),
         );
         let status = ok(&mut doc, json!({"op":"status"}));
-        assert!(status["failures"].as_array().is_none_or(Vec::is_empty), "{status}");
+        assert!(
+            status["failures"].as_array().is_none_or(Vec::is_empty),
+            "{status}"
+        );
         holes(&doc)
     };
     let copied = sheet("First cut");
     assert!(copied > 2.0, "{copied} holes");
     let again = sheet("Again cut");
-    assert!((again - copied).abs() < 1e-6, "{again} holes, where the first cut's pattern makes {copied}");
+    assert!(
+        (again - copied).abs() < 1e-6,
+        "{again} holes, where the first cut's pattern makes {copied}"
+    );
 }
 
 #[test]
