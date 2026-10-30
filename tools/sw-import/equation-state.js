@@ -1,25 +1,19 @@
 "use strict";
 // Which of an export's equations SolidWorks applies.
 //
-// The exporter writes IEquationMgr.Disabled as `disabled`, and in every export SolidWorks 2018 gives it true for
-// every equation but the first, where SolidWorks applies them all: GetDisabledEquationCount is 0 and the jobs'
-// parts have the values the equations give. From format 9 the exporter writes that count
-// (`disabledEquationCount`, per configuration) and IEquationMgr.Suppression (`suppressed`, in that configuration).
-// An equation is in force unless it is suppressed in the configuration, or disabled where SolidWorks says some are.
+// The exporter writes IEquationMgr.Disabled as `disabled`, and SolidWorks 2018 gives true for every equation but the
+// first, in every document, where SolidWorks applies them all (the jobs' parts have the values they give). Disabling
+// an equation takes it out of the list GetCount and Equation[i] read ("you are removing it from the list of
+// relations"): GetDisabledEquationCount (format 9's `disabledEquationCount`) counts those, and is as high as 4 where
+// one equation is listed (Escutcheon Surround Removable). So every equation listed is in force, unless it is
+// suppressed in the configuration (IEquationMgr.Suppression, format 9's `suppressed`).
 //
 // `settleEquations(doc)` sets each equation's `disabled` to whether SolidWorks does NOT apply it, so the importers'
 // `e.disabled` means that; what the API said is kept as `apiDisabled`.
 
-/** Whether SolidWorks applies equation `e` of configuration `cfg`, with why not. */
-function equationState(e, cfg) {
+/** Whether SolidWorks applies equation `e` (of a configuration's list), with why not. */
+function equationState(e) {
   if (e.suppressed === true) return { applied: false, why: "suppressed in this configuration" };
-  const count = cfg && cfg.disabledEquationCount;
-  if (typeof count === "number" && count > 0) {
-    // Disabled equations there are: Disabled is believed only if it names as many as SolidWorks counts
-    const named = ((cfg && cfg.equations) || []).filter(x => (x.apiDisabled !== undefined ? x.apiDisabled : x.disabled) === true).length;
-    const flag = e.apiDisabled !== undefined ? e.apiDisabled : e.disabled;
-    if (named === count && flag === true) return { applied: false, why: "disabled" };
-  }
   return { applied: true };
 }
 
@@ -27,10 +21,9 @@ function equationState(e, cfg) {
 function settleEquations(doc) {
   if (!doc || doc.__equationsSettled) return doc;
   for (const cfg of doc.configurations || []) {
-    const list = cfg.equations || [];
-    for (const e of list) if (e.apiDisabled === undefined) e.apiDisabled = e.disabled;
-    for (const e of list) {
-      const s = equationState(e, cfg);
+    for (const e of cfg.equations || []) {
+      if (e.apiDisabled === undefined) e.apiDisabled = e.disabled;
+      const s = equationState(e);
       e.disabled = !s.applied;
       if (s.why) e.notApplied = s.why;
     }

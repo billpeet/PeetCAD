@@ -166,8 +166,9 @@ revision 26.5):
   (`Status`) and `automaticSolveOrder`. `disabled` (`IEquationMgr.Disabled`) is still written, but don't go by
   it: SolidWorks 2018 gives true for every equation but the first, in every document, where
   `GetDisabledEquationCount` is 0 and SolidWorks applies them all (the jobs' parts have the values they give).
-  An equation is in force unless it is suppressed in the configuration, or disabled where the count says some are
-  (`tools/sw-import/equation-state.js`). An equation of one configuration only (`configurationOption` 1) has its
+  A disabled equation is not in the list at all (`GetCount`, `Equation[i]`): the count is of those, and is 4
+  where one equation is listed (Escutcheon Surround Removable). So every equation listed is in force unless it is
+  suppressed in the configuration (`tools/sw-import/equation-state.js`). An equation of one configuration only (`configurationOption` 1) has its
   own text in that configuration's list (Door Stiffener D's `"D4@Sketch12"`).
 - A part's linear pattern has `editSelections`: what editing it (Edit Feature) selects, each with its `type`
   (swSelectType_e), `mark` and `entity`; the edit is cancelled. SolidWorks 2018 has the pattern's "up to
