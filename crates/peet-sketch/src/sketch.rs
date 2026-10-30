@@ -243,6 +243,11 @@ pub enum ConstraintKind {
         sides: [ArcSide; 2],
         along: Along,
     },
+    /// A dimension: the angle between two lines measured with the second turned round,
+    /// 180° less the angle between their directions (0..=180). SolidWorks measures an
+    /// angle on the side its dimension is drawn, which can be this one: the value is the
+    /// one SolidWorks shows.
+    SupplementaryAngle(EntityId, EntityId),
 }
 
 /// Where on a circle or arc a [`ConstraintKind::SideDistance`] is measured.
@@ -375,6 +380,7 @@ impl ConstraintKind {
             | HorizontalDistance(a, b)
             | VerticalDistance(a, b)
             | Angle(a, b)
+            | SupplementaryAngle(a, b)
             | Offset(a, b)
             | SideDistance { a, b, .. } => vec![a, b],
             PointOnCurve { point, curve } => vec![point, curve],
@@ -398,6 +404,7 @@ impl ConstraintKind {
                 | Radius(_)
                 | Diameter(_)
                 | Angle(..)
+                | SupplementaryAngle(..)
                 | Offset(..)
                 | SideDistance { .. }
         )
@@ -405,7 +412,10 @@ impl ConstraintKind {
 
     /// Whether the dimension value is an angle in degrees (otherwise a length in mm).
     pub fn is_angular(&self) -> bool {
-        matches!(self, ConstraintKind::Angle(..))
+        matches!(
+            self,
+            ConstraintKind::Angle(..) | ConstraintKind::SupplementaryAngle(..)
+        )
     }
 
     pub fn label(&self) -> &'static str {
@@ -434,6 +444,7 @@ impl ConstraintKind {
             Patterned { .. } => "Patterned",
             Offset(..) => "Offset",
             SideDistance { .. } => "Distance to a side",
+            SupplementaryAngle(..) => "Supplementary angle",
         }
     }
 }
@@ -717,6 +728,11 @@ impl Sketch {
             Angle(l1, l2) => {
                 let d1 = self.curve(l1)?.line_direction()?;
                 let d2 = self.curve(l2)?.line_direction()?;
+                Some(d1.perp_dot(d2).atan2(d1.dot(d2)).abs().to_degrees())
+            }
+            SupplementaryAngle(l1, l2) => {
+                let d1 = self.curve(l1)?.line_direction()?;
+                let d2 = -self.curve(l2)?.line_direction()?;
                 Some(d1.perp_dot(d2).atan2(d1.dot(d2)).abs().to_degrees())
             }
             Offset(a, b) => match (self.curve(a)?, self.curve(b)?) {
@@ -1034,7 +1050,7 @@ impl Sketch {
             | VerticalPoints(a, b)
             | HorizontalDistance(a, b)
             | VerticalDistance(a, b) => k(a) == K::Point && k(b) == K::Point && a != b,
-            Parallel(a, b) | Perpendicular(a, b) | Angle(a, b) => {
+            Parallel(a, b) | Perpendicular(a, b) | Angle(a, b) | SupplementaryAngle(a, b) => {
                 k(a) == K::Line && k(b) == K::Line && a != b
             }
             Tangent(a, b) => {
@@ -1293,7 +1309,7 @@ fn expected_kinds(kind: &ConstraintKind) -> &'static str {
              coincident with one of the spline's points instead)"
         }
         Horizontal(_) | Vertical(_) | Length(_) => "a line",
-        Parallel(..) | Perpendicular(..) | Angle(..) => "two lines",
+        Parallel(..) | Perpendicular(..) | Angle(..) | SupplementaryAngle(..) => "two lines",
         Tangent(..) => "a line and a circle/arc, or two circles/arcs",
         Equal(..) => "two lines, or two circles/arcs",
         Concentric(..) => "two circles/arcs",

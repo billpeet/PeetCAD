@@ -183,3 +183,46 @@ fn set_takes_parameters_and_configurations() {
     );
     close(volume(&doc), 150.0 * 50.0 * 6.0 - 2.0 * hole() * 6.0 / 4.0);
 }
+
+/// The angle between two lines on the other side, as SolidWorks shows one whose dimension
+/// is drawn there: `supplementary_angle` holds the value SolidWorks has, and setting it
+/// turns the line as SolidWorks would.
+#[test]
+fn a_supplementary_angle_holds_the_value_solidworks_shows() {
+    let mut doc = Document::default();
+    let reply = ok(
+        &mut doc,
+        json!({"op":"sketch", "on":"top", "name":"Chamfer", "draw":[
+            {"type":"line", "from":[0,0], "to":[40,0], "as":"base"},
+            {"type":"line", "from":[40,0], "to":[60,20], "as":"slope"},
+            {"type":"fix", "of":["base"]},
+            {"type":"coincident", "of":["base.end", "slope.start"]},
+            {"type":"length", "of":["slope"], "value":20},
+            {"type":"supplementary_angle", "of":["base", "slope"], "value":135, "name":"bevel"},
+        ]}),
+    );
+    assert_eq!(reply["definition"], "fully_defined", "{reply}");
+    let slope = |doc: &mut Document| {
+        let f = ok(doc, json!({"op":"feature", "feature":"Chamfer"}));
+        let line = f["entities"].as_array().unwrap()[1].clone();
+        let (a, b) = (&line["from"], &line["to"]);
+        let d = [
+            b[0].as_f64().unwrap() - a[0].as_f64().unwrap(),
+            b[1].as_f64().unwrap() - a[1].as_f64().unwrap(),
+        ];
+        (
+            d[1].atan2(d[0]).to_degrees().abs(),
+            f["dimensions"][1]["value"].clone(),
+        )
+    };
+    let (turn, value) = slope(&mut doc);
+    assert!((turn - 45.0).abs() < 1e-6, "{turn}");
+    assert_eq!(value, 135.0);
+    ok(
+        &mut doc,
+        json!({"op":"set", "name":"bevel@Chamfer", "value":120}),
+    );
+    let (turn, value) = slope(&mut doc);
+    assert!((turn - 60.0).abs() < 1e-6, "{turn}");
+    assert_eq!(value, 120.0);
+}

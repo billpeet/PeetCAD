@@ -466,7 +466,7 @@ pub fn dimension_anchor(sketch: &Sketch, kind: &ConstraintKind) -> Option<DVec2>
             Some(c.point_at(0.5))
         }
         Radius(c) | Diameter(c) => sketch.curve(c)?.center(),
-        Angle(l1, l2) => {
+        Angle(l1, l2) | SupplementaryAngle(l1, l2) => {
             let a = sketch.curve(l1)?;
             let b = sketch.curve(l2)?;
             Some(
@@ -562,7 +562,9 @@ fn dimension_text(kind: &ConstraintKind, value: f64) -> String {
     match kind {
         ConstraintKind::Radius(_) => format!("R{}", super::dim_value_text(kind, value)),
         ConstraintKind::Diameter(_) => format!("Ø{}", super::dim_value_text(kind, value)),
-        ConstraintKind::Angle(..) => format!("{}°", super::dim_value_text(kind, value)),
+        ConstraintKind::Angle(..) | ConstraintKind::SupplementaryAngle(..) => {
+            format!("{}°", super::dim_value_text(kind, value))
+        }
         _ => super::dim_value_text(kind, value),
     }
 }
@@ -657,11 +659,14 @@ fn draw_dimension(
                 arrow(painter, view, tip, d, color);
             }
         }
-        Angle(l1, l2) => {
+        Angle(l1, l2) | SupplementaryAngle(l1, l2) => {
             let a = sketch.curve(l1)?;
             let b = sketch.curve(l2)?;
             let v = dimension_anchor(sketch, kind)?;
-            let (d1, d2) = (a.line_direction()?, b.line_direction()?);
+            let (d1, mut d2) = (a.line_direction()?, b.line_direction()?);
+            if matches!(kind, SupplementaryAngle(..)) {
+                d2 = -d2;
+            }
             let rho = label.distance(v).max(px * 12.0);
             let a0 = d1.to_angle();
             let sweep = d1.angle_to(d2);

@@ -307,3 +307,65 @@ fn a_sub_assembly_shows_one_of_its_configurations() {
     assert_eq!(exported["bodies"], 3, "{exported}");
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// The status of the feature called `name` in the part open in `doc`.
+fn feature_status(doc: &mut Document, name: &str) -> Value {
+    let listed = ok(doc, json!({"op": "features"}));
+    listed["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == name)
+        .unwrap_or_else(|| panic!("no {name} in {listed}"))["status"]
+        .clone()
+}
+
+/// FabSys's SuppressFeature("NAME@COMPONENT"), as SolidWorks' EditSuppress2 on a feature
+/// of a component: the feature is suppressed in the configuration the component shows,
+/// not in the one its part has active, and components showing other configurations of the
+/// part keep it.
+#[test]
+fn a_components_feature_is_suppressed_in_the_configuration_it_shows() {
+    let dir = temp("suppress");
+    let plate = plate_file(&dir);
+    let mut part = Document::default();
+    for op in [
+        json!({"op": "open", "path": plate}),
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [10, 10], "to": [20, 20]}]}),
+        json!({"op": "extrude", "sketch": "Sketch2", "depth": 30, "name": "Boss"}),
+        json!({"op": "save", "path": plate}),
+    ] {
+        ok(&mut part, op);
+    }
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": plate, "name": "Base", "link": true}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": plate, "name": "Lid", "configuration": "Thick", "at": [0, 0, 50], "link": true}),
+    );
+    ok(&mut doc, json!({"op": "suppress", "feature": "Boss@Lid"}));
+    let now = ok(&mut doc, json!({"op": "components"}));
+    assert_eq!(z(&now, "Lid"), (50.0, 70.0), "Lid loses its boss");
+    assert_eq!(z(&now, "Base"), (0.0, 30.0), "Base, in Default, keeps it");
+    // The part's file: suppressed in Thick only; Default, its active one, as it was.
+    let mut saved = Document::default();
+    ok(&mut saved, json!({"op": "open", "path": plate}));
+    assert_eq!(feature_status(&mut saved, "Boss"), "ok");
+    ok(
+        &mut saved,
+        json!({"op": "configuration", "configuration": "Thick"}),
+    );
+    assert_eq!(feature_status(&mut saved, "Boss"), "suppressed");
+    // Unsuppressed again, in Thick.
+    ok(
+        &mut doc,
+        json!({"op": "suppress", "feature": "Boss@Lid", "on": false}),
+    );
+    let now = ok(&mut doc, json!({"op": "components"}));
+    assert_eq!(z(&now, "Lid"), (50.0, 80.0));
+    std::fs::remove_dir_all(dir).ok();
+}

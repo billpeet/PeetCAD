@@ -1375,13 +1375,14 @@ function importPart(doc, dir) {
         case "angle": {
           if (anyLines.length !== 2 || !dim) break;
           item = { type: "angle", of: anyLines, value: tidy(dim.value * 180 / Math.PI) };
-          // SolidWorks' angle is between the lines, on the side its dimension is drawn; PeetCAD's is
-          // between the lines' directions, start to end: the other one where the lines run so
+          // SolidWorks' angle is between the lines, on the side its dimension is drawn; PeetCAD's `angle` is
+          // between the lines' directions, start to end, and its `supplementary_angle` the other one: that,
+          // where the lines run so, so that the dimension has the value SolidWorks shows
           if (lines.length === 2) {
             const way = l => { const d = [l.g.end.x - l.g.start.x, l.g.end.y - l.g.start.y]; return l.turned ? d.map(v => -v) : d; };
             const [a, b] = lines.map(way);
             const now = Math.acos(Math.max(-1, Math.min(1, (a[0] * b[0] + a[1] * b[1]) / Math.hypot(...a) / Math.hypot(...b)))) * 180 / Math.PI;
-            if (Math.abs(now - (180 - item.value)) < Math.abs(now - item.value)) { item.value = tidy(180 - item.value); item.supplementary = true; }
+            if (Math.abs(now - (180 - item.value)) < Math.abs(now - item.value)) item.type = "supplementary_angle";
           }
           break;
         }
@@ -1462,12 +1463,11 @@ function importPart(doc, dir) {
       return most;
     };
     // A relation PeetCAD makes of more than one (`with`) is kept or dropped as one
-    const clean = item => { const { sw, supplementary, moves, extra, with: also, ...rest } = item; return [rest, ...(also || [])]; };
+    const clean = item => { const { sw, moves, extra, with: also, ...rest } = item; return [rest, ...(also || [])]; };
     const keep = item => {
       if (!item.also) tally.kept++;
       if (item.extra) tally.kept += item.extra;
       if (item.sw) sk.dimensions.set(item.sw, item.name);
-      if (item.sw && item.supplementary) (sk.supplementary || (sk.supplementary = new Set())).add(item.sw);
     };
     const backup = peet.file + ".before";
     const save = () => { fs.copyFileSync(peet.file, backup); return peet.script.length; };
@@ -5049,7 +5049,6 @@ function importPart(doc, dir) {
             if (d.drivenState === 1 && !d.readOnly && !peetName && !(c.equations || []).some(e => !e.disabled && e.expression.replace(/\s/g, "").startsWith(`"${ref}"=`))) continue;
             done.add(c.name + "|" + d.fullName);
             let value = tidy(d.valueType === 1 ? d.value * 180 / Math.PI : d.value * MM);
-            if (sk.supplementary && sk.supplementary.has(d.fullName)) value = tidy(180 - value);
             // A formula gives the value in every configuration. A dimension that follows a parameter gets
             // its value through the parameter.
             if (formulas.has(d.fullName)) continue;

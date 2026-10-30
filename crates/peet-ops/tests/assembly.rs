@@ -3682,3 +3682,46 @@ fn a_flexible_sub_assembly_inside_a_flexible_one_moves_too() {
     assert_eq!(d["max"], json!([50.0, 70.0, 130.0]));
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// A distance between a straight edge and a plane square to it, as SolidWorks takes one
+/// (the Door Assembly's rod guide to the door's return): from the edge's middle along the
+/// plane's normal, with the edge left square to it.
+#[test]
+fn a_distance_from_an_edge_square_to_a_plane_is_from_its_middle() {
+    let dir = temp("square-edge");
+    let (plate, _) = plate_and_pin(&dir);
+    let mut doc = assembly();
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": plate, "name": "Base"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": plate, "name": "Lid", "at": [-30, 0, 5]}),
+    );
+    for op in [
+        json!({"op": "mate", "type": "coincident",
+               "a": {"component": "Base", "face": {"normal": [0, 0, 1]}},
+               "b": {"component": "Lid", "face": {"normal": [0, 0, -1]}}}),
+        json!({"op": "mate", "type": "parallel",
+               "a": {"component": "Base", "face": {"normal": [0, -1, 0]}},
+               "b": {"component": "Lid", "face": {"normal": [0, -1, 0]}}}),
+    ] {
+        let made = ok(&mut doc, op);
+        assert_eq!(made["mate"]["status"], "ok", "{made}");
+    }
+    // The lid's front bottom edge runs along x, square to the base's end face.
+    let made = ok(
+        &mut doc,
+        json!({"op": "mate", "type": "distance", "distance": 58,
+               "a": {"component": "Lid", "edge": {"at": [20, 0, 0]}},
+               "b": {"component": "Base", "face": {"normal": [1, 0, 0]}}}),
+    );
+    assert_eq!(made["mate"]["status"], "ok", "{made}");
+    // The edge's middle, (20, 0, 0) on the lid, 58 out from the base's end at x = 40.
+    let lid = placement(&doc, "Lid");
+    let middle = lid.to_world(DVec3::new(20.0, 0.0, 0.0));
+    assert!(((middle.x - 40.0).abs() - 58.0).abs() < 1e-6, "{lid:?}");
+    assert!((middle.z - 5.0).abs() < 1e-6, "{lid:?}");
+    std::fs::remove_dir_all(dir).ok();
+}
