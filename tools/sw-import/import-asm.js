@@ -213,7 +213,16 @@ const STANDARD_NORMALS = { top: [0, 0, 1], front: [0, -1, 0], right: [1, 0, 0] }
 
 // The faces and edges of each part file, as PeetCAD has them, to find a mate's end by its geometry
 const geometryCache = new Map();
-function geometryOf(file) {
+/**
+ * The parts the assembly being imported sizes by its equations: library copy -> the part as the run imported
+ * it. Their faces are looked for in the part as SolidWorks' export has it, not as an assembly's equations last
+ * wrote it into the copy (Plinth Folded's equation makes Pipe 308 mm and writes it when the assembly is saved;
+ * SolidWorks' Pipe, which both plinth assemblies mate to, is 300).
+ */
+let asExported = new Map();
+function geometryOf(view) {
+  const [f, c] = splitView(view);
+  const file = asExported.has(f) ? asExported.get(f) + (c ? `|${c}` : "") : view;
   if (geometryCache.has(file)) return geometryCache.get(file);
   const [faces, edges] = askView(file, [{ op: "faces" }, { op: "edges" }]);
   const g = { faces: (faces || {}).faces || [], edges: (edges || {}).edges || [] };
@@ -1856,7 +1865,16 @@ function importAssembly(name, exp, outFile, listed = null, frame = null) {
   // Component patterns, before the equations, which may drive their counts and spacings
   if (cfg) importPatterns(peet, cfg, report, byPath, want, placeOf, insertPlain);
 
-  // Equations, before the mates: a part an equation sizes (Plinth Folded's pipes) is mated at its size
+  // Equations, before the mates: a part an equation sizes (Plinth Folded's pipes) is mated at its size. Its
+  // faces are found in it as SolidWorks has it (`asExported`).
+  asExported = new Map();
+  for (const e of [cfg, ...others].flatMap(o => (o && o.equations) || [])) {
+    const m = /^\s*"[^"]*@([^"@]+)<\d+>\.Part"\s*=/i.exec(e.expression || "");
+    const c = m && all.find(x => /\.sldprt$/i.test(x.file || "") && path.basename(x.file.replace(/\\/g, "/")).replace(/\.sldprt$/i, "").toLowerCase() === m[1].trim().toLowerCase());
+    const copy = c && partFileOf(c.file);
+    const run = c && path.join(partsDir, path.basename(c.file.replace(/\\/g, "/")).replace(/\.sldprt$/i, "") + ".peet");
+    if (copy && run && path.resolve(copy) !== path.resolve(run)) asExported.set(copy, run);
+  }
   if (cfg && (cfg.equations || []).length) importEquations(peet, cfg, report, byPath, want, name);
 
   // Mates. One SolidWorks has suppressed here and live in another configuration is added in that one, where the
