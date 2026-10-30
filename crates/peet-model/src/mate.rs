@@ -45,7 +45,10 @@
 //! **Which way round.** Two planes are parallel with their normals opposed (faces
 //! against each other, the default) or the same way (`flip`). Both satisfy the same
 //! equations, and the solve goes to the nearer one, so a component that is the wrong way
-//! round is turned over first.
+//! round (or far from the right way) is turned to it first. The one turned is the one
+//! the mates before hold less, about the one direction they hold it by if they do: as
+//! SolidWorks moves the component being mated, never one its own mates have placed. A
+//! mate whose way round the mates before rule out for both fails.
 //!
 //! **Conflicts.** If the mates can't all hold, they are added one at a time in their
 //! order; each that can't be satisfied with those before it is flagged and left out, so
@@ -2392,6 +2395,14 @@ const HARD: Options = Options {
     dogleg: true,
 };
 
+/// Sliding alone: the mates' equations are linear in where the components are, so it
+/// holds in a few steps if it holds at all.
+const SLIDE: Options = Options {
+    max_iter: 30,
+    hard: true,
+    dogleg: true,
+};
+
 /// The equations of every mate that can be set up, and the status of those that can't.
 struct System {
     eqs: Vec<Eq>,
@@ -2422,14 +2433,16 @@ fn start_values(components: &[Placed]) -> Vec<f64> {
 /// these equations, and left in `used` for the next solve.
 ///
 /// `exactly` solves them even if they already hold to within the tolerance (after a
-/// drag's loose solve, which leaves them a little off).
+/// drag's loose solve, which leaves them a little off). `slide` tries sliding the
+/// components first, without turning them.
 fn solve_equations(
     system: &System,
     eqs: &[u32],
     components: &[Placed],
     vals: &mut [f64],
-    kept: Option<(&mut Vec<Kept>, &mut Vec<Kept>)>,
+    mut kept: Option<(&mut Vec<Kept>, &mut Vec<Kept>)>,
     exactly: bool,
+    slide: bool,
 ) -> bool {
     if eqs.is_empty() {
         return true;
@@ -2437,15 +2450,34 @@ fn solve_equations(
     let vars = unknowns(system, eqs, components);
     // The structure of the problem (which equation reads which unknown) is kept from
     // the last solve of the same equations: setting it up costs more than solving.
-    let signature = signature(system, &vars, eqs, false);
-    let new = |vars| Problem::new(vars, eqs.to_vec(), &system.eqs, Space::Equations);
-    let Some((kept, used)) = kept else {
-        return solve_problem(&mut new(vars), system, vals, exactly);
+    let mut attempt = |vars: Vec<u32>, vals: &mut [f64], options: Options, exactly: bool| {
+        let signature = signature(system, &vars, eqs, false);
+        let new = |vars| Problem::new(vars, eqs.to_vec(), &system.eqs, Space::Equations);
+        let Some((kept, used)) = kept.as_mut() else {
+            return solve_problem(&mut new(vars), system, vals, exactly, options);
+        };
+        let mut problem = take_kept(kept, used, &signature).unwrap_or_else(|| new(vars));
+        let solved = solve_problem(&mut problem, system, vals, exactly, options);
+        used.push((signature, problem));
+        solved
     };
-    let mut problem = take_kept(kept, used, &signature).unwrap_or_else(|| new(vars));
-    let solved = solve_problem(&mut problem, system, vals, exactly);
-    used.push((signature, problem));
-    solved
+    // Sliding the components first, without turning them, as SolidWorks keeps a
+    // component's orientation where the mates allow: the least move of both together
+    // turns a component a little to save sliding it (a hinge's free leaf drifts round
+    // as the door it is on changes size), and far off, a lot.
+    if slide {
+        let slid: Vec<u32> = vars.iter().copied().filter(|v| v % 6 < 3).collect();
+        if !slid.is_empty() && slid.len() < vars.len() {
+            let before = vals.to_vec();
+            if attempt(slid, vals, SLIDE, exactly) {
+                // Held as it was, or slid there: then made exact with all the unknowns
+                // (sliding stops within the tolerance), which turns nothing to speak of.
+                return (!exactly && vals == before.as_slice()) || attempt(vars, vals, HARD, true);
+            }
+            vals.copy_from_slice(&before);
+        }
+    }
+    attempt(vars, vals, HARD, exactly)
 }
 
 /// The slots of the free components that `eqs` read (a slot beyond the components is
@@ -2461,14 +2493,20 @@ fn unknowns(system: &System, eqs: &[u32], components: &[Placed]) -> Vec<u32> {
     vars
 }
 
-fn solve_problem(problem: &mut Problem, system: &System, vals: &mut [f64], exactly: bool) -> bool {
+fn solve_problem(
+    problem: &mut Problem,
+    system: &System,
+    vals: &mut [f64],
+    exactly: bool,
+    options: Options,
+) -> bool {
     let mut residuals = Vec::new();
     problem.residuals(&system.eqs, vals, &mut residuals);
     // Already there: nothing is moved, so an assembly that is solved stays as it is.
     if !exactly && peet_solve::max_abs(&residuals) <= SKIP {
         return true;
     }
-    problem.solve(&system.eqs, vals, HARD).converged
+    problem.solve(&system.eqs, vals, options).converged
 }
 
 /// The signature a problem is kept under: its unknowns, its equations and their slots
@@ -2775,13 +2813,166 @@ fn freedoms(
     (total, each)
 }
 
-/// A component turned half way round about `axis` through `through`.
-fn turned_over(frame: Frame, through: DVec3, axis: DVec3) -> Frame {
-    let q = DQuat::from_axis_angle(axis, std::f64::consts::PI);
-    Frame {
-        origin: through + q * (frame.origin - through),
-        rotation: (q * frame.rotation).normalize(),
+/// Two directions a mate asks to be one (or opposite) are turned to it before the solve
+/// when they are further apart than this (the cosine of the angle between them): the
+/// solve finds the nearer of the two ways round, and from square to each other or
+/// further, it may find neither. Mates that hold are well inside it, so a solved
+/// assembly is not touched.
+const TURN_FIRST: f64 = 0.99;
+
+/// The turn that takes the direction `w` (in the world) to `to`, keeping the directions
+/// the mates before hold the component by (`held`): about the one they hold it by, if
+/// they hold it by one only (and `w` and `to` are as far from that); with none, the
+/// shortest. `None` if there is no such turn.
+fn turn_to(w: DVec3, to: DVec3, held: &[DVec3]) -> Option<DQuat> {
+    let Some(&u) = held.first() else {
+        return Some(if w.dot(to) > -1.0 + 1e-9 {
+            DQuat::from_rotation_arc(w, to)
+        } else {
+            DQuat::from_axis_angle(w.any_orthonormal_vector(), std::f64::consts::PI)
+        });
+    };
+    if held.iter().any(|d| d.cross(u).length() > 1e-6) || (w.dot(u) - to.dot(u)).abs() > 1e-6 {
+        return None;
     }
+    let (w, to) = (w - u * w.dot(u), to - u * to.dot(u));
+    if w.length() < 1e-9 || to.length() < 1e-9 {
+        return None;
+    }
+    Some(DQuat::from_axis_angle(
+        u,
+        u.dot(w.cross(to)).atan2(w.dot(to)),
+    ))
+}
+
+/// The components joined to `start` by the mates in `asked` through components that are
+/// not fixed: what moves along with it.
+fn cluster(
+    start: usize,
+    asked: &[(MateId, Vec<usize>, Vec<Proto>)],
+    components: &[Placed],
+) -> Vec<usize> {
+    let mut out = vec![start];
+    let mut k = 0;
+    while k < out.len() {
+        let at = out[k];
+        for (_, on, _) in asked {
+            if on.contains(&at) {
+                for i in on {
+                    if !components[*i].fixed && !out.contains(i) {
+                        out.push(*i);
+                    }
+                }
+            }
+        }
+        k += 1;
+    }
+    out
+}
+
+/// Moves what each mate brings in (`movers`: the components that move together, by the
+/// mate's index in `asked`) onto it, before the solve: as far as the mates between them
+/// and the rest so far ask, without turning them, so that they hold as they are
+/// linearised (the gaps they leave are taken up by sliding, not swinging: a far-off
+/// place, left to the solve, turns a small component through many turns and the solve
+/// may not come back). Mates that hold are not touched, so a solved assembly is left as
+/// it is. Returns the components it moved: their groups are solved exactly (what it
+/// leaves may be within the tolerance, but it is not exact).
+fn bring_in(
+    system: &System,
+    asked: &[(MateId, Vec<usize>, Vec<Proto>)],
+    movers: &[Option<Vec<usize>>],
+    vals: &mut [f64],
+) -> Vec<usize> {
+    let mut brought = Vec::new();
+    let mut g = [0.0; MAX_SLOTS];
+    // The gradient of an equation (just evaluated into `g`) by where all of `c` is.
+    let slide = |eq: &Eq, c: &[usize], g: &[f64; MAX_SLOTS]| {
+        let mut t = DVec3::ZERO;
+        for (s, slot) in eq.slots().iter().enumerate() {
+            if c.contains(&(*slot as usize / 6)) && slot % 6 < 3 {
+                t[(slot % 6) as usize] += g[s];
+            }
+        }
+        t
+    };
+    // The rows of the equations of the mates up to `k` between `c` and the rest: their
+    // residual, and its gradient by where `c` is.
+    let rows = |k: usize, c: &[usize], vals: &[f64], g: &mut [f64; MAX_SLOTS]| {
+        let mut out: Vec<(bool, DVec3, f64)> = Vec::new();
+        for (kk, (_, on, _)) in asked.iter().enumerate().take(k + 1) {
+            if !on.iter().any(|i| c.contains(i)) || on.iter().all(|i| c.contains(i)) {
+                continue;
+            }
+            for e in system.ranges[kk].1.clone() {
+                let eq = &system.eqs[e];
+                if eq.range.is_some() {
+                    continue;
+                }
+                let r = eq.eval(vals, g);
+                let t = slide(eq, c, g);
+                if t.length_squared() > 1e-18 {
+                    out.push((kk == k, t, r));
+                }
+            }
+        }
+        out
+    };
+    let worst = |rows: &[(bool, DVec3, f64)], this: bool| {
+        rows.iter()
+            .filter(|(t, ..)| *t == this)
+            .map(|(.., r)| r.abs())
+            .fold(0.0, f64::max)
+    };
+    for (k, mover) in movers.iter().enumerate() {
+        let Some(c) = mover else {
+            continue;
+        };
+        let before = rows(k, c, vals, &mut g);
+        let off = worst(&before, true);
+        // Only once it is the right way round: what sliding can't do is the solve's,
+        // and where to slide to depends on how it turns.
+        let turned = system.ranges[k].1.clone().all(|e| {
+            let eq = &system.eqs[e];
+            let r = eq.eval(vals, &mut g);
+            eq.range.is_some() || slide(eq, c, &g) != DVec3::ZERO || r.abs() <= SKIP
+        });
+        if off <= SKIP || !turned {
+            continue;
+        }
+        // The least move that makes them hold, as far as they are linear in it (a few
+        // steps, for the damping's bias and what is not linear).
+        let kept: Vec<f64> = vals.to_vec();
+        let mut now = before.clone();
+        for _ in 0..3 {
+            let mut normal = peet_math::DMat3::ZERO;
+            let mut rhs = DVec3::ZERO;
+            for (_, t, r) in &now {
+                normal += peet_math::DMat3::from_cols(*t * t.x, *t * t.y, *t * t.z);
+                rhs -= *t * *r;
+            }
+            let scale = (normal.x_axis.x + normal.y_axis.y + normal.z_axis.z).max(1.0);
+            normal += peet_math::DMat3::from_diagonal(DVec3::splat(1e-9 * scale));
+            let by = normal.inverse() * rhs;
+            if !by.is_finite() {
+                break;
+            }
+            for i in c {
+                for (v, d) in vals[i * 6..i * 6 + 3].iter_mut().zip(by.to_array()) {
+                    *v += d;
+                }
+            }
+            now = rows(k, c, vals, &mut g);
+        }
+        let after = now;
+        // Kept only if it brings this mate nearer and leaves those before as they were.
+        if worst(&after, true) < off && worst(&after, false) <= worst(&before, false) + SKIP {
+            brought.extend(c.iter().copied());
+        } else {
+            vals.copy_from_slice(&kept);
+        }
+    }
+    brought
 }
 
 /// Solves the mates. `components` are those that are not suppressed, where they are;
@@ -2823,6 +3014,18 @@ pub(crate) fn solve(
     // Each mate's id, the component each of its ends is on (`mate_ends`), and its
     // equations.
     let mut asked: Vec<(MateId, Vec<usize>, Vec<Proto>)> = Vec::new();
+    // The planes and axes the mates before this one hold the components by: each
+    // mate's components and directions (in their own coordinates). A component is
+    // turned to suit a mate only if it is the less held of the two, and then, with what
+    // is mated to it, about one of these if it can be, so the mates before keep it the
+    // way round they had it.
+    let mut held_by: Vec<(usize, DVec3, usize, DVec3)> = Vec::new();
+    // How many of the mates before this one each component is on.
+    let mut mated: Vec<usize> = vec![0; components.len()];
+    // What each mate in `asked` brings in: the end the mates before hold less (of two
+    // alike, the second), with what moves along with it; it is moved onto the mate
+    // before the solve.
+    let mut movers: Vec<Option<Vec<usize>>> = Vec::new();
     for mate in mates {
         if mate.suppressed {
             statuses.insert(mate.id, Status::Suppressed);
@@ -3063,6 +3266,18 @@ pub(crate) fn solve(
         // module docs). Planes go against each other unless asked otherwise; axes
         // whichever way is nearer. A round edge is its axis here.
         let (a, b) = (a.axis(), b.axis());
+        // What moves with the end on `i`: what the mates before join to it, unless that
+        // takes in the other end (then it alone).
+        let moving = |i: usize| {
+            let other = if i == ia { ib } else { ia };
+            let c = cluster(i, &asked, &components);
+            if c.contains(&other) { vec![i] } else { c }
+        };
+        let mut mover = [ib, ia]
+            .into_iter()
+            .filter(|i| !components[*i].fixed)
+            .min_by_key(|i| mated[*i])
+            .map(moving);
         let wanted = match (a, b) {
             (Element::Plane(..), Element::Plane(..)) => match mate.align {
                 None | Some(Align::AntiAligned) => Some(-1.0),
@@ -3091,18 +3306,68 @@ pub(crate) fn solve(
         {
             let (fa, fb) = (components[ia].frame, components[ib].frame);
             let (wa, wb) = (fa.vector_to_world(na), fb.vector_to_world(nb));
-            if wa.dot(wb) * wanted < 0.0 {
-                let axis = wa
-                    .cross(wb)
-                    .try_normalize()
-                    .unwrap_or_else(|| wb.any_orthonormal_vector());
-                if !components[ib].fixed {
-                    components[ib].frame = turned_over(fb, fb.to_world(pb), axis);
-                } else if !components[ia].fixed {
-                    components[ia].frame = turned_over(fa, fa.to_world(pa), axis);
+            let along = wa.dot(wb) * wanted;
+            if along < TURN_FIRST {
+                // The one that is turned is the one the mates before hold less: a
+                // component placed by its own mates is not turned by a later one that
+                // joins another to it (SolidWorks moves the newcomer). Of two held
+                // alike, the second end's; if the one can't be turned without undoing
+                // the mates before, the other.
+                let mut order: Vec<(usize, DVec3, DVec3, DVec3)> =
+                    [(ib, pb, wb, wa * wanted), (ia, pa, wa, wb * wanted)]
+                        .into_iter()
+                        .filter(|(i, ..)| !components[*i].fixed)
+                        .collect();
+                order.sort_by_key(|(i, ..)| mated[*i]);
+                let mut turned = order.is_empty();
+                for (i, p, w, to) in order {
+                    let c = moving(i);
+                    // The directions the mates between it and the rest hold it by.
+                    let held: Vec<DVec3> = held_by
+                        .iter()
+                        .filter_map(|(x, nx, y, ny)| match (c.contains(x), c.contains(y)) {
+                            (true, false) => Some(components[*x].frame.vector_to_world(*nx)),
+                            (false, true) => Some(components[*y].frame.vector_to_world(*ny)),
+                            _ => None,
+                        })
+                        .collect();
+                    if let Some(q) = turn_to(w, to, &held) {
+                        let through = components[i].frame.to_world(p);
+                        for m in &c {
+                            let frame = components[*m].frame;
+                            components[*m].frame = Frame {
+                                origin: through + q * (frame.origin - through),
+                                rotation: (q * frame.rotation).normalize(),
+                            };
+                        }
+                        mover = Some(c);
+                        turned = true;
+                        break;
+                    }
+                }
+                // Only the wrong way round is a failure: a turn the mates before don't
+                // allow short of that is left to the solve.
+                if !turned && along < 0.0 {
+                    let way = if wanted > 0.0 {
+                        "aligned"
+                    } else {
+                        "anti-aligned"
+                    };
+                    statuses.insert(
+                        mate.id,
+                        Status::Failed(format!(
+                            "It can't be {way} with the mates above it: turning either component over to suit it would undo them. Change its alignment, or one of those mates."
+                        )),
+                    );
+                    continue;
                 }
             }
+            held_by.push((ia, na, ib, nb));
         }
+        for i in &on {
+            mated[*i] += 1;
+        }
+        movers.push(mover);
         asked.push((mate.id, on, protos));
     }
 
@@ -3176,6 +3441,7 @@ pub(crate) fn solve(
     let mut kept = std::mem::take(&mut memo.problems);
     let mut used = Vec::new();
     let mates_equations = system.eqs.len();
+    let brought = bring_in(&system, &asked, &movers, &mut vals);
 
     // ---- A drag: the component is pulled before its group is solved ----
     let mut dragged = None;
@@ -3258,13 +3524,16 @@ pub(crate) fn solve(
         let eqs_of = |k: usize| system.ranges[k].1.clone().map(|e| e as u32);
         let all: Vec<u32> = mates.iter().flat_map(|k| eqs_of(*k)).collect();
         let before = vals.clone();
+        let drag = dragged == Some(*of);
+        let exactly = drag || brought.iter().any(|i| root(&mut group, *i) == *of);
         if solve_equations(
             &system,
             &all,
             &components,
             &mut vals,
             Some((&mut kept, &mut used)),
-            dragged == Some(*of),
+            exactly,
+            !drag,
         ) {
             for k in mates {
                 statuses.insert(system.ranges[*k].0, Status::Ok);
@@ -3278,7 +3547,7 @@ pub(crate) fn solve(
             let before = vals.clone();
             let mut with = holding.clone();
             with.extend(eqs_of(*k));
-            if solve_equations(&system, &with, &components, &mut vals, None, false) {
+            if solve_equations(&system, &with, &components, &mut vals, None, exactly, true) {
                 holding = with;
                 statuses.insert(system.ranges[*k].0, Status::Ok);
             } else {

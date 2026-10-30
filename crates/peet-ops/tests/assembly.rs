@@ -3598,6 +3598,37 @@ fn a_flexible_sub_assembly_moves_as_its_parents_mates_ask() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// A flexible sub-assembly replaced by a copy of its file keeps where what moves in it
+/// is, as SolidWorks does (FabSys points a door's hinges at the job's copy of the hinge,
+/// and the hinge's leaf must not swing round).
+#[test]
+fn a_flexible_sub_assembly_replaced_by_a_copy_keeps_its_pose() {
+    let dir = temp("flexible-replace");
+    let hinge = hinge_file(&dir);
+    let copy = dir.join("J1 hinge.peet").to_string_lossy().into_owned();
+    std::fs::copy(&hinge, &copy).unwrap();
+    let mut doc = assembly();
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": hinge, "name": "Hinge", "fixed": true}),
+    );
+    ok(&mut doc, json!({"op": "flexible", "component": "Hinge"}));
+    ok(
+        &mut doc,
+        json!({"op": "place", "component": ["Hinge", "Arm"], "rotate": {"axis": "z", "angle": 60}}),
+    );
+    let r = ok(
+        &mut doc,
+        json!({"op": "replace", "component": "Hinge", "path": copy}),
+    );
+    assert_eq!(
+        r["component"]["moving"][0]["rotate"],
+        json!({"axis": [0.0, 0.0, 1.0], "angle": 60.0}),
+        "{r}"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn a_flexible_sub_assembly_inside_a_flexible_one_moves_too() {
     let dir = temp("flexible-nested");

@@ -224,7 +224,7 @@ rebuild measured).
 
 | Operation | Fields |
 |---|---|
-| `set` | `name` (an address, or a parameter), `value`, `configurations` (as for `edit`; a parameter: as for `set_parameter`). A reference dimension can't be set. An address's case doesn't matter where only one dimension matches it, as in SolidWorks. On an assembly: a mate's value `D1@MATE` (with `configurations`, of the assembly), a parameter, or a component's dimension `NAME@FEATURE@COMPONENT` (see Assemblies; `configurations` of the assembly, for its equation) |
+| `set` | `name` (an address, or a parameter), `value`, `configurations` (as for `edit`; a parameter: as for `set_parameter`). A reference dimension can't be set. An address's case doesn't matter where only one dimension matches it, as in SolidWorks. A negative number reverses a sketch's distance from a line, horizontal or vertical distance, as in SolidWorks: the geometry goes to the other side and the dimension keeps the value without its sign. On an assembly: a mate's value `D1@MATE` (with `configurations`, of the assembly), a parameter, or a component's dimension `NAME@FEATURE@COMPONENT` (see Assemblies; `configurations` of the assembly, for its equation) |
 | `name_dimension` | `feature`, `dimension` (its name or field), `name`. A sketch dimension's name has no `"` or `@`; another feature's value may take a whole address |
 | `dimensions` | `feature`, `name`: every address, its feature, field, value, `driven` for a reference dimension, and each configuration's value where they differ |
 
@@ -236,6 +236,10 @@ rebuild measured).
 
 ## Selectors
 
+A feature, reference plane, mate or component given by name is found by exactly that name,
+or, as in SolidWorks, in any case where only one is alike (`"wiv Mid Plane"` finds
+`WIV Mid Plane`).
+
 In the UI, select a face or edge in a part's viewport and use **Properties > Names** to
 add a name or remove an existing binding. With nothing selected, Properties lists
 all names, including unavailable targets, so you can remove stale bindings. The same
@@ -243,7 +247,8 @@ actions are operations.
 
 Use `name_face` with `face` and `name`, or `name_edge` with `edge` and `name`, to
 bind a user name to geometry already built. `delete_name` with `name` removes the
-binding. Names are case-sensitive, unique across faces and edges in each part, saved
+binding. Names are unique across faces and edges in each part (found in any case where
+only one is alike, as in SolidWorks), saved
 with the model and shared by all configurations. Select them with `{"name": "Front"}`;
 other selector fields can still restrict the match. `faces` and `edges` include a
 `names` array for each item. Curved faces, including hole walls, can be named and
@@ -281,7 +286,7 @@ flat piece at that point, as SolidWorks keeps each piece picked.
 |---|---|
 | `sketch` | `on` (plane), `name`, `draw` |
 | `draw` | `sketch`, `draw` |
-| `set_dimension` | `sketch`, `name` (`"d1"`), `value`, `configurations` |
+| `set_dimension` | `sketch`, `name` (`"d1"`), `value`, `configurations`. A negative number reverses a distance from a line, a horizontal or a vertical distance (the geometry goes to the other side), as SolidWorks does |
 | `set_text` | `sketch`, `text` (its id; left out: the sketch's only text), `string`, `font`, `height`, `angle`, `width`, `spacing`, `align` |
 
 A `draw` list holds items with a `type`:
@@ -715,7 +720,7 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 | `fix` | `component`, `on` (default true), `configurations` (of the assembly; default the active one) |
 | `component_configuration` | `component`, `configuration` (a configuration of its part, or `null` for whichever the part has active), `configurations` (of the assembly; default the active one): the configuration of its part the component shows, SolidWorks' referenced configuration (FabSys's `SetSubComponentConfig`). Two components of one part can show different configurations; each configuration is built once (model schema 12) |
 | `flexible` | `component` (a sub-assembly), `on` (default true): solves the sub-assembly as flexible (SolidWorks' "Solve as: Flexible"): its own mates are solved in this assembly with this one's, so what is not fixed in it moves as they let it, each instance posed on its own. `components` then gives `"flexible": true` and `moving` (each moving component's `path`, `at`, `rotate`, `freedom`). Off: rigid, as its file has it (model schema 12) |
-| `replace` | `component`, and `path`, `sample` or `part`: another part, in the same place. With `path` and `"link": true` (and `absolute`, as for `insert`) the component follows that file (SolidWorks' replace components). It keeps its mates and the configuration of the same name; one named after its part (`Door-2`) is renamed after the new one (`J1 Door-1`), and the assembly's equations and parameters that read it follow |
+| `replace` | `component`, and `path`, `sample` or `part`: another part, in the same place. With `path` and `"link": true` (and `absolute`, as for `insert`) the component follows that file (SolidWorks' replace components). It keeps its mates (and a flexible sub-assembly replaced by a copy of its file, where what moves in it is) and the configuration of the same name; one named after its part (`Door-2`) is renamed after the new one (`J1 Door-1`), and the assembly's equations and parameters that read it follow |
 | `rename`, `suppress`, `show`, `delete` | `component` in place of `feature`. `suppress` takes `configurations` (of the assembly; default the active one) |
 | `component_pattern` | `components` (the originals), `type` (`linear`, `circular`), `name`. Linear: `direction`, `spacing`, `count` (the original included; a whole number or an expression, worked out at every rebuild: copies are made and removed as it changes), `flip`, `second` (`{direction, spacing, count, flip}`). Circular: `axis`, `angle` (default 360), `count`, `flip`. A direction or axis is `"x"`, `"y"`, `"z"`, `[x, y, z]`, `{"origin": …, "direction": …}`, or `{"component": …, "edge" or "face": selector}` |
 | `edit_component_pattern` | `pattern`, and any of `count`, `spacing`, `angle`, `flip`, `direction`, `axis`, `second` (`null` removes it) |
@@ -740,7 +745,7 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 | `explode_steps` | every step (`id`, `name`, `components`, `by`), whether the assembly is shown `exploded`, and under `moved` each component the steps move with its total `by` and where it is drawn exploded (`at`) |
 | `open_component` | `component`: opens its part as a document of its own, in the configuration the component shows (the reply's `configuration`), and makes it current. `save` without a `path` on that document stores it back, as one undo step of the assembly, for every component of the part, with the part's own active configuration as it was. Needs a session |
 | `components` | every component (`id`, `name`, `part`, `configuration` (of its part, where the part has several), `at`, `rotate`, `fixed`, `freedom`, `mates`, `status`, `message`, `min`, `max`) and every part (`id`, `name`, `kind`, how many `components`, `material`, and where it has several `configurations` and its `active_configuration`); how many `mates`, and the `freedom` left |
-| `mate` | `type` (`coincident`, `concentric`, `parallel`, `distance`, `angle`, `fasten`, `width`, `slot`, `limit_angle`, `limit_distance`, `symmetric`, `path`), `a`, `b`, `distance` or `angle` for those types, `flip` (`true`: aligned), `align` (`aligned`, `anti_aligned` or `closest`: which way round the ends go, SolidWorks' alignment; not with `flip`), `flip_dimension` (the distance or angle measured the other way: SolidWorks' "flip dimension"), `suppressed` (added without being solved: nothing moves until it is unsuppressed), `name`. An end is `{"component": …, "face": selector}` (or `"edge"`, `"vertex"`, `"plane"`, `"origin": true`, or `"sketch"` (name or id) with `"entity"` (the id `feature` gives a point, line, circle or arc)), the selector in the part's own coordinates. `component` is a name, id or nonempty path array from the top-level component down through sub-assemblies. `plane` takes `"top"`, `"front"`, `"right"`, a reference plane or coordinate system by name or id, or a planar face selector. With no `component`, the end is the assembly's own: `{"plane": "top"}` (or `front`, `right`, or a reference plane made in the assembly with `plane`) or `{"origin": true}`, fixed where the assembly is; or `{"face": {"ray": …}}`, the first face of any shown component the ray meets, in the assembly's coordinates. For `fasten` the component alone |
+| `mate` | `type` (`coincident`, `concentric`, `parallel`, `distance`, `angle`, `fasten`, `width`, `slot`, `limit_angle`, `limit_distance`, `symmetric`, `path`), `a`, `b`, `distance` or `angle` for those types, `flip` (`true`: aligned), `align` (`aligned`, `anti_aligned` or `closest`: which way round the ends go, SolidWorks' alignment; not with `flip`), `flip_dimension` (the distance or angle measured the other way: SolidWorks' "flip dimension"), `suppressed` (added without being solved: nothing moves until it is unsuppressed), `name`. Ends the wrong way round are put right by turning over the component the mates above hold less (the newcomer), never one they place; a mate whose alignment the mates above rule out fails. An end is `{"component": …, "face": selector}` (or `"edge"`, `"vertex"`, `"plane"`, `"origin": true`, or `"sketch"` (name or id) with `"entity"` (the id `feature` gives a point, line, circle or arc)), the selector in the part's own coordinates. `component` is a name, id or nonempty path array from the top-level component down through sub-assemblies. `plane` takes `"top"`, `"front"`, `"right"`, a reference plane or coordinate system by name or id, or a planar face selector. With no `component`, the end is the assembly's own: `{"plane": "top"}` (or `front`, `right`, or a reference plane made in the assembly with `plane`) or `{"origin": true}`, fixed where the assembly is; or `{"face": {"ray": …}}`, the first face of any shown component the ray meets, in the assembly's coordinates. For `fasten` the component alone |
 | `plane` in an assembly | a reference plane of the assembly's own (SolidWorks' `InsertPlane` in an assembly), from its planes; `features`, `edit`, `rename` and `delete` work on it, and mate ends with no `component` take it |
 | `mate`, `type: "slot"` | `a`, `b`: a face of a straight slot (one of its round ends or a flat side) and an axis (a round face or edge), either way round. The axis stays parallel to the slot's ends and on the line between their axes. `mode`: `free` by default (anywhere between the ends), `centered`, `dimension` with `distance` (from the first end's axis: the round end picked, else the end the part lists first), `percent` with `percent`; `flip_dimension` measures from the other end. No `flip` or `align` |
 | `mate`, `type: "limit_angle"` / `"limit_distance"` | `a`, `b`, `min`, `max` (degrees, or lengths): the angle or distance, measured as `angle` and `distance` measure it (`flip_dimension` too), kept anywhere between them |

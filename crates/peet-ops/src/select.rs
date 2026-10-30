@@ -726,8 +726,21 @@ pub(crate) fn point(doc: &Document, sel: &PointSel) -> Result<PointRef, String> 
     }
 }
 
+/// The geometry a name was given to: by exactly that name, or in any case where only one
+/// name is the same but for case (as SolidWorks matches named entities).
+fn named<'a>(doc: &'a Document, name: &str) -> Option<&'a peet_model::naming::NamedGeometry> {
+    let names = &doc.model.geometry_names;
+    names.get(name).or_else(|| {
+        let mut alike = names.iter().filter(|(n, _)| n.eq_ignore_ascii_case(name));
+        match (alike.next(), alike.next()) {
+            (Some((_, g)), None) => Some(g),
+            _ => None,
+        }
+    })
+}
+
 fn named_face(doc: &Document, name: &str) -> Result<(usize, FaceId), String> {
-    match doc.model.geometry_names.get(name) {
+    match named(doc, name) {
         Some(peet_model::naming::NamedGeometry::Face(r)) => find_face(bodies(doc), r)
             .map(|f| (f.body, f.id)).ok_or_else(|| format!("The face named '{name}' no longer exists in this configuration or rollback state. Inspect faces and reassign the name if needed.")),
         Some(_) => Err(format!("'{name}' names an edge, not a face.")),
@@ -736,7 +749,7 @@ fn named_face(doc: &Document, name: &str) -> Result<(usize, FaceId), String> {
 }
 
 fn named_edge(doc: &Document, name: &str) -> Result<(usize, EdgeId), String> {
-    match doc.model.geometry_names.get(name) {
+    match named(doc, name) {
         Some(peet_model::naming::NamedGeometry::Edge(r)) => find_edge(bodies(doc), r)
             .map(|e| (e.body, e.id)).ok_or_else(|| format!("The edge named '{name}' no longer exists in this configuration or rollback state. Inspect edges and reassign the name if needed.")),
         Some(_) => Err(format!("'{name}' names a face, not an edge.")),

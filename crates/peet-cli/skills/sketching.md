@@ -119,7 +119,14 @@ etch or cut out a label, `extrude` it to emboss one. Put the sketch on the face 
 - A dimension is a size, not a coordinate: it has no sign. Geometry stays on the side
   it was drawn, so a point drawn at x = −42 with a `horizontal_distance` of 42 to the
   origin stays at −42.
-- A dimension is greater than 0. To put two things in line, use a relation:
+- **A negative value reverses a dimension**, as in SolidWorks: given to a `distance`
+  from a line (or a centreline's doubled one), a `horizontal_distance` or a
+  `vertical_distance` (by `set_dimension` or `set`), it puts the geometry on the other
+  side, and the dimension keeps the value without its sign. A point at x = −42 set to
+  −42 from the origin goes to +42. A negative value again turns it back. Use it where a
+  script means "the other side"; elsewhere (a length, a radius, a distance between two
+  points, an expression) a negative value is refused.
+- Otherwise a dimension is greater than 0. To put two things in line, use a relation:
   `horizontal` or `vertical` of two points, or `coincident`. To centre a
   `center_rectangle` on the origin: `{"type": "coincident", "of": ["r.center",
   "origin"]}`.
@@ -137,6 +144,12 @@ etch or cut out a label, `extrude` it to emboss one. Put the sketch on the face 
 {"op": "sketch", "on": "top", "name": "Plate", "draw": [{"type": "rectangle", "from": [0, 0], "to": [40, 20], "as": "r"}, {"type": "horizontal_distance", "of": ["r.top.end", "r.top.start"], "value": 40, "name": "width"}, {"type": "vertical_distance", "of": ["r.top.start", "r.right.start"], "value": 20, "name": "height"}]}
 {"op": "set_dimension", "sketch": "Plate", "name": "width", "value": 60}
 {"op": "feature", "feature": "Plate"}
+```
+
+```jsonl
+{"op": "sketch", "on": "top", "name": "Notch", "draw": [{"type": "line", "from": [0, 0], "to": [0, 40], "construction": true, "as": "centre"}, {"type": "fix", "of": ["centre"]}, {"type": "circle", "center": [-30, 20], "radius": 4, "as": "hole"}, {"type": "distance", "of": ["hole.center", "centre"], "value": 30, "name": "offset"}, {"type": "vertical_distance", "of": ["centre.start", "hole.center"], "value": 20}, {"type": "radius", "of": ["hole"], "value": 4}]}
+{"op": "set_dimension", "sketch": "Notch", "name": "offset", "value": -25}
+{"op": "feature", "feature": "Notch"}
 ```
 - The reply's `definition` must not be `over_defined`: that is two relations or
   dimensions that contradict each other (the sketch's status is then `warning`). Take

@@ -212,8 +212,8 @@ fn feature_in(part: &Model, sel: &FeatureSel) -> Result<FeatureId, String> {
             .map(|f| f.id)
             .ok_or_else(|| format!("{} has no feature with the id {}.", part.name, id.0)),
         FeatureSel::Name(name) => {
-            let mut found = part.features().filter(|f| f.name == *name);
-            match (found.next(), found.next()) {
+            let found = part.features_named(name);
+            match (found.first(), found.get(1)) {
                 (Some(f), None) => Ok(f.id),
                 (Some(_), Some(_)) => Err(format!(
                     "Several features of {} are called '{name}': give its id.",

@@ -111,6 +111,12 @@ rough placement decides which of several possible positions is taken.
   or `align`, not both. Two axes (a pin in a hole) go whichever way is nearer unless
   `align` says: `aligned` points the axes alike, `anti_aligned` apart. An axis's
   direction is the `axis` that `faces` or `edges` gives for it, in its part.
+- **Which component turns over.** When a mate's planes (or axes) are the wrong way
+  round, the component its mates above hold less is turned over to suit it (the one
+  just inserted), as SolidWorks moves the newcomer: a component its own mates place
+  stays where it is. If neither can be turned without undoing the mates above, the mate
+  fails with "It can't be aligned (anti-aligned) with the mates above it": its `align`
+  contradicts them; change it, or the mate it contradicts.
 - **`flip_dimension`** measures a distance (or an angle) the other way. A distance from
   a flat face goes out along its outward normal, from the first end if it is a flat face:
   the other end is in front of the face. With `"flip_dimension": true` it is behind the
@@ -771,6 +777,8 @@ component of a part removes the part from the assembly.
   (`Door-2`) is renamed after the new one (`J1 Door-1`), and the assembly's equations
   and parameters that read it (`"Width@Sketch1@Door-2"`) read the new name; one given
   its own name keeps it. Without `link` the part is copied into the assembly.
+  A flexible sub-assembly replaced by a copy of its file keeps where what moves in it
+  is (a hinge's leaf stays as it was).
 - Only `path` can be linked; `"absolute": true` keeps the link a full path.
 
 ## Showing, hiding, colouring, exploding

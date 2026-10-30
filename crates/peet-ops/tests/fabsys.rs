@@ -450,3 +450,281 @@ fn a_forced_rebuild_rebuilds_and_says_how_the_document_is() {
     assert_eq!(r["failures"], json!([]));
     assert_eq!(doc.model, before, "a rebuild changes nothing");
 }
+
+/// A block 100 by 60 by 6 from the origin, with its faces named after the way they
+/// look: `Up` (+Z), `Down`, `Left` (-X), `Right`, `Near` (-Y), `Far`.
+fn named_block(dir: &std::path::Path, name: &str) -> String {
+    let path = dir.join(name).to_string_lossy().into_owned();
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [100, 60]}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "extrude", "sketch": "Sketch1", "depth": 6}),
+    );
+    for (face, normal) in [
+        ("Up", [0, 0, 1]),
+        ("Down", [0, 0, -1]),
+        ("Left", [-1, 0, 0]),
+        ("Right", [1, 0, 0]),
+        ("Near", [0, -1, 0]),
+        ("Far", [0, 1, 0]),
+    ] {
+        ok(
+            &mut doc,
+            json!({"op": "name_face", "face": {"normal": normal}, "name": face}),
+        );
+    }
+    ok(&mut doc, json!({"op": "save", "path": path}));
+    path
+}
+
+fn mate(a: (&str, &str), b: Value, align: &str) -> Value {
+    json!({"op": "mate", "type": "coincident", "align": align,
+           "a": {"component": a.0, "face": {"name": a.1}}, "b": b})
+}
+
+fn place(doc: &mut Document, name: &str) -> Value {
+    let all = ok(doc, json!({"op": "components"}));
+    let c = component(&all, name);
+    json!([c["min"], c["max"]])
+}
+
+/// A component held by three plane mates to the assembly's planes stays where they put
+/// it when another is mated to it the wrong way round: the newcomer is turned over, not
+/// it (FabSys's job test2 turned its left wall over on inserting the stay bracket).
+#[test]
+fn a_component_its_mates_place_is_not_turned_over_by_a_later_mate() {
+    let dir = temp("turned");
+    let block = named_block(&dir, "Block.peet");
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": block, "name": "Wall-1", "at": [40, 30, 20]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "fix", "component": "Wall-1", "on": false}),
+    );
+    ok(
+        &mut doc,
+        mate(("Wall-1", "Down"), json!({"plane": "top"}), "anti_aligned"),
+    );
+    ok(
+        &mut doc,
+        mate(
+            ("Wall-1", "Left"),
+            json!({"plane": "right"}),
+            "anti_aligned",
+        ),
+    );
+    ok(
+        &mut doc,
+        mate(("Wall-1", "Near"), json!({"plane": "front"}), "aligned"),
+    );
+    let wall = place(&mut doc, "Wall-1");
+    assert_eq!(wall, json!([[0.0, 0.0, 0.0], [100.0, 60.0, 6.0]]));
+
+    // The bracket comes in looking up, as the wall does: put face to face with the
+    // wall's top, it is the one turned over.
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": block, "name": "Bracket-1", "at": [10, 10, 50]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "fix", "component": "Bracket-1", "on": false}),
+    );
+    let r = ok(
+        &mut doc,
+        mate(
+            ("Bracket-1", "Up"),
+            json!({"component": "Wall-1", "face": {"name": "Up"}}),
+            "anti_aligned",
+        ),
+    );
+    assert_eq!(r["mate"]["status"], "ok", "{r}");
+    assert_eq!(place(&mut doc, "Wall-1"), wall);
+    let bracket = place(&mut doc, "Bracket-1");
+    assert!(
+        (bracket[0][2].as_f64().unwrap() - 6.0).abs() < 1e-6,
+        "{bracket}"
+    );
+    // Its side to the wall's: the wall still doesn't move, and nothing does on hiding
+    // one or rebuilding.
+    let r = ok(
+        &mut doc,
+        mate(
+            ("Bracket-1", "Left"),
+            json!({"component": "Wall-1", "face": {"name": "Left"}}),
+            "aligned",
+        ),
+    );
+    assert_eq!(r["mate"]["status"], "ok", "{r}");
+    let bracket = place(&mut doc, "Bracket-1");
+    ok(
+        &mut doc,
+        json!({"op": "show", "component": "Bracket-1", "on": false}),
+    );
+    ok(&mut doc, json!({"op": "rebuild"}));
+    assert_eq!(place(&mut doc, "Wall-1"), wall);
+    assert_eq!(place(&mut doc, "Bracket-1"), bracket);
+    let mates = ok(&mut doc, json!({"op": "mates"}));
+    for m in mates["mates"].as_array().unwrap() {
+        assert_eq!(m["status"], "ok", "{mates}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A plane mate that asks for the one way round that the mates before it rule out fails,
+/// rather than being had the other way round and said to hold.
+#[test]
+fn a_mate_that_cant_be_the_way_round_it_asks_fails() {
+    let dir = temp("way-round");
+    let block = named_block(&dir, "Block.peet");
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": block, "name": "Wall-1"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "fix", "component": "Wall-1", "on": false}),
+    );
+    ok(
+        &mut doc,
+        mate(("Wall-1", "Down"), json!({"plane": "top"}), "anti_aligned"),
+    );
+    ok(
+        &mut doc,
+        mate(
+            ("Wall-1", "Left"),
+            json!({"plane": "right"}),
+            "anti_aligned",
+        ),
+    );
+    // Turned to face the front plane the other way, it would be its own mirror image.
+    let r = ok(
+        &mut doc,
+        mate(
+            ("Wall-1", "Near"),
+            json!({"plane": "front"}),
+            "anti_aligned",
+        ),
+    );
+    assert_eq!(r["mate"]["status"], "failed", "{r}");
+    assert!(
+        r["mate"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("anti-aligned"),
+        "{r}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// FabSys's `SetDimension("Notch@Sketch42@…", -203)`: SolidWorks takes a negative value
+/// for a distance by reversing it, the geometry going to the other side.
+#[test]
+fn a_negative_distance_reverses_the_dimension() {
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [
+            {"type": "line", "from": [0, 0], "to": [0, 40], "construction": true, "as": "centre"},
+            {"type": "fix", "of": ["centre"]},
+            {"type": "circle", "center": [-30, 20], "radius": 4, "as": "hole"},
+            {"type": "distance", "of": ["hole.center", "centre"], "value": 30, "name": "Notch"},
+            {"type": "vertical_distance", "of": ["centre.start", "hole.center"], "value": 20},
+            {"type": "radius", "of": ["hole"], "value": 4, "name": "R"},
+        ]}),
+    );
+    let centre = |doc: &mut Document| {
+        let s = ok(doc, json!({"op": "feature", "feature": "Sketch1"}));
+        let hole = s["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["type"] == "circle")
+            .unwrap()
+            .clone();
+        hole["at"][0].as_f64().unwrap()
+    };
+    ok(
+        &mut doc,
+        json!({"op": "set", "name": "Notch@Sketch1", "value": -25}),
+    );
+    assert!((centre(&mut doc) - 25.0).abs() < 1e-9);
+    let dims = ok(&mut doc, json!({"op": "dimensions", "feature": "Sketch1"}));
+    assert!(dims.to_string().contains("25"), "{dims}");
+    // It stays on that side: a positive value is a size, as before.
+    ok(
+        &mut doc,
+        json!({"op": "set", "name": "Notch@Sketch1", "value": 12}),
+    );
+    assert!((centre(&mut doc) - 12.0).abs() < 1e-9);
+    // Negative again: back.
+    ok(
+        &mut doc,
+        json!({"op": "set_dimension", "sketch": "Sketch1", "name": "Notch", "value": -12}),
+    );
+    assert!((centre(&mut doc) + 12.0).abs() < 1e-9);
+    // A radius has no other side.
+    let e = error(
+        &mut doc,
+        json!({"op": "set", "name": "R@Sketch1", "value": -4}),
+    );
+    assert!(e.contains("greater than zero"), "{e}");
+}
+
+/// SolidWorks finds features, reference planes and named faces without regard to case
+/// (FabSys's script asks for "wiv Mid Plane" of a part with "WIV Mid Plane").
+#[test]
+fn names_are_found_in_any_case_where_only_one_is_alike() {
+    let dir = temp("case");
+    let block = named_block(&dir, "Block.peet");
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "open", "path": block}));
+    ok(
+        &mut doc,
+        json!({"op": "plane", "from": "top", "distance": 3, "name": "WIV Mid Plane"}),
+    );
+    ok(&mut doc, json!({"op": "save"}));
+    ok(
+        &mut doc,
+        json!({"op": "suppress", "feature": "extrude1", "on": false}),
+    );
+    let mut asm = Document::default();
+    ok(&mut asm, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut asm,
+        json!({"op": "insert", "path": block, "name": "Wiv-1", "fixed": false}),
+    );
+    let r = ok(
+        &mut asm,
+        json!({"op": "mate", "type": "coincident", "align": "aligned",
+               "a": {"component": "wiv-1", "plane": "wiv mid plane"}, "b": {"plane": "top"}}),
+    );
+    assert_eq!(r["mate"]["status"], "ok", "{r}");
+    let r = ok(
+        &mut asm,
+        mate(("Wiv-1", "LEFT"), json!({"plane": "right"}), "anti_aligned"),
+    );
+    assert_eq!(r["mate"]["status"], "ok", "{r}");
+    ok(&mut asm, json!({"op": "suppress", "mate": "coincident1"}));
+    // Two alike but for case: neither is meant.
+    ok(
+        &mut doc,
+        json!({"op": "plane", "from": "top", "distance": 4, "name": "wiv mid PLANE"}),
+    );
+    let e = error(
+        &mut doc,
+        json!({"op": "suppress", "feature": "WIV MID PLANE"}),
+    );
+    assert!(e.contains("WIV MID PLANE"), "{e}");
+    let _ = std::fs::remove_dir_all(dir);
+}
