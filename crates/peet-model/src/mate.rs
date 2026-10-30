@@ -721,8 +721,11 @@ fn element(end: &MateEnd, component: &Placed) -> Result<Element, String> {
         }
         MateGeom::Edge(r) => {
             let f = find_edge(&bodies, r).ok_or_else(|| gone("edge"))?;
-            let e = match &bodies[f.body].solid.edge(f.id).curve {
-                Curve3::Line(l) => Element::Line(l.origin, l.dir),
+            let edge = bodies[f.body].solid.edge(f.id);
+            let e = match &edge.curve {
+                // Through the edge's middle: where a distance to a plane square to it is
+                // measured from (see `square_edge`).
+                Curve3::Line(l) => Element::Line(edge.point_at_fraction(0.5), l.dir),
                 Curve3::Circle(c) => Element::Circle(c.frame.origin, c.frame.z_axis()),
                 Curve3::Ellipse(_) | Curve3::Nurbs(_) => {
                     return Err(format!(
@@ -1470,6 +1473,27 @@ fn equations(
         }
     }
     Ok(out)
+}
+
+/// A distance between a straight edge and a plane square to it, as SolidWorks takes one:
+/// from the edge's middle, along the plane's normal (a straight edge along a plane is kept
+/// along it, at the distance). The point to measure from in place of the edge, if `end`
+/// is such an edge; `cos` gives the cosine between the edge's direction and the plane's
+/// normal, in the assembly.
+fn square_edge(
+    end: &MateEnd,
+    line: Element,
+    plane: Element,
+    cos: impl Fn(DVec3, DVec3) -> f64,
+) -> Option<Element> {
+    match (&end.geom, line, plane) {
+        (Some(MateGeom::Edge(_)), Element::Line(p, d), Element::Plane(_, n))
+            if cos(d, n).abs() > 1.0 - 1e-6 =>
+        {
+            Some(Element::Point(p))
+        }
+        _ => None,
+    }
 }
 
 /// The equations of a distance between two elements (neither a circle): from a plane
@@ -3170,6 +3194,21 @@ pub(crate) fn solve(
                     )?
                 }
                 _ => {
+                    if matches!(
+                        mate.kind,
+                        MateKind::Distance(_) | MateKind::LimitDistance { .. }
+                    ) {
+                        let world = |i: usize, v: DVec3| components[i].frame.vector_to_world(v);
+                        if let Some(p) =
+                            square_edge(ends[END_A], a, b, |d, n| world(ia, d).dot(world(ib, n)))
+                        {
+                            a = p;
+                        } else if let Some(p) =
+                            square_edge(ends[END_B], b, a, |d, n| world(ib, d).dot(world(ia, n)))
+                        {
+                            b = p;
+                        }
+                    }
                     let mut protos = equations(&mate.kind, a, b, params)?;
                     if mate.flip_dimension {
                         for p in &mut protos {

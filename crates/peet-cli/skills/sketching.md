@@ -169,6 +169,18 @@ etch or cut out a label, `extrude` it to emboss one. Put the sketch on the face 
 
 - `midpoint` takes a line or an arc: on an arc the point sits halfway round from its
   start to its end (a circle has no middle).
+- **Which angle an `angle` holds:** the one between the two lines' directions, each from
+  its start to its end. For the other one, 180° less, use `supplementary_angle` (the
+  angle with the second line turned round). SolidWorks shows the angle on the side its
+  dimension is drawn, so a value read from SolidWorks (or set by a script written for
+  it) can be either: pick the type whose value is the one SolidWorks shows, and setting
+  it later moves the sketch as it would in SolidWorks.
+
+```jsonl
+{"op": "sketch", "on": "top", "name": "Chamfer", "draw": [{"type": "line", "from": [0, 0], "to": [40, 0], "as": "base"}, {"type": "line", "from": [40, 0], "to": [60, 20], "as": "slope"}, {"type": "fix", "of": ["base"]}, {"type": "coincident", "of": ["base.end", "slope.start"]}, {"type": "supplementary_angle", "of": ["base", "slope"], "value": 135, "name": "bevel"}]}
+{"op": "set_dimension", "sketch": "Chamfer", "name": "bevel", "value": 120}
+{"op": "feature", "feature": "Chamfer"}
+```
 
 ### Linear sketch patterns
 
