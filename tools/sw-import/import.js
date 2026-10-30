@@ -3176,6 +3176,7 @@ function importPart(doc, dir) {
    * RightReturn and unsuppresses RLockingDoorFlange). They are suppressed while it is built.
    */
   const displacedBy = new Map(); // SolidWorks feature imported asleep -> the PeetCAD features suppressed to build it
+  const slept = new Map();       // SolidWorks feature imported asleep -> the PeetCAD features suppressed for it (not those that follow them)
   function displaced(f) {
     if (f.type !== "EdgeFlange") return [];
     const mine = flangeEdges(f), out = [];
@@ -3209,7 +3210,7 @@ function importPart(doc, dir) {
       for (const p of parents || []) {
         if (seen.has(p)) continue;
         seen.add(p);
-        if (asleep.has(p)) woken.push(...made.get(p));
+        if (asleep.has(p)) woken.push(...(slept.get(p) || made.get(p)));
         for (const n of displacedBy.get(p) || []) off.add(n);
         wake((byName.get(p) || {}).parents);
       }
@@ -3223,8 +3224,16 @@ function importPart(doc, dir) {
     try { handleLive({ ...f, suppressed: false }); } finally { asleepNow = false; }
     sleep(true);
     const names = made.get(f.name);
-    const built = !had && names && names.length > 0 && names.every(n => peet.apply({ op: "suppress", feature: n, on: true, configurations: "all" }).ok);
-    if (built) asleep.add(f.name);
+    // The feature is suppressed, and what goes with it (a flange's corners with others) follows it, so that
+    // unsuppressing it brings them back too (FabSys unsuppresses RInterlockingFlange1 only: its corners, left
+    // suppressed, would leave Edge-Flange16 run on 13 mm to meet it). What doesn't follow is suppressed too.
+    const explicit = [];
+    const built = !had && names && names.length > 0 && names.every((n, i) => {
+      if (i > 0 && (peet.ask({ op: "feature", feature: n }) || {}).status === "suppressed") return true;
+      explicit.push(n);
+      return peet.apply({ op: "suppress", feature: n, on: true, configurations: "all" }).ok;
+    });
+    if (built) { asleep.add(f.name); slept.set(f.name, explicit); }
     if (built && off.size) displacedBy.set(f.name, [...off]);
     for (const x of report.features.slice(before)) {
       if (x.name !== f.name) continue;
