@@ -3243,6 +3243,45 @@ function importPart(doc, dir) {
     return false;
   }
 
+  /**
+   * Gives the faces and edges of SolidWorks' `bodies` that have names those names, in the configuration shown,
+   * counting them in `names` ({ wanted, given, missed }); names in `skip` are left (given already). A face is
+   * found by a point on it and its normal, by the point alone, and failing those (a point where the face meets
+   * a bend, on both) as the one flat face of the part in the face's plane, facing its way, as big as it is. A
+   * closed round edge (a hole's) by a point on its circle.
+   */
+  function nameGeometry(bodies, names, skip = new Set()) {
+    let faces = null;
+    for (const b of bodies) {
+      for (const face of b.faces.filter(x => x.name && !skip.has(x.name))) {
+        names.wanted++;
+        // A point on the face (the second export has one); failing that the middle of its box
+        const at = (face.point ? mm(face.point) : mid(mm(face.box.slice(0, 3)), mm(face.box.slice(3)))).map(tidy);
+        const tries = [...(face.normal ? [{ at, normal: face.normal.map(tidy) }] : []), { at }];
+        if (tries.some(sel => peet.apply({ op: "name_face", face: sel, name: face.name }).ok)) { names.given++; continue; }
+        if (face.surface === "plane" && face.normal && face.area) {
+          faces = faces || peet.ask({ op: "faces" }).faces || [];
+          const area = face.area * 1e6;
+          const same = faces.filter(x => x.surface === "plane" && x.normal && dot(x.normal, face.normal) > 0.9999
+            && Math.abs(dot(sub(x.center, at), face.normal)) < 1e-3 && Math.abs(x.area_mm2 - area) < 1e-3 * area);
+          if (same.length === 1 && peet.apply({ op: "name_face", face: { body: same[0].body, index: same[0].index }, name: face.name }).ok) { names.given++; continue; }
+        }
+        names.missed.push(face.name);
+      }
+      for (const edge of (b.namedEdges || []).filter(x => !skip.has(x.name))) {
+        names.wanted++;
+        let sel = edge.start && edge.end ? { at: mid(mm(edge.start), mm(edge.end)).map(tidy) } : null;
+        // A whole circle has no ends: a point on it
+        if (!sel && edge.curve === "circle" && Array.isArray(edge.circle) && edge.circle.length >= 7) {
+          const centre = mm(edge.circle.slice(0, 3)), n = unit(edge.circle.slice(3, 6)), r = edge.circle[6] * MM;
+          const across = unit(cross(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+          sel = { at: add(centre, mul(across, r)).map(tidy) };
+        }
+        if (sel && peet.apply({ op: "name_edge", edge: sel, name: edge.name }).ok) names.given++; else names.missed.push(edge.name);
+      }
+    }
+  }
+
   /** A plane made; one suppressed in SolidWorks is suppressed too (where it is live nowhere), as FabSys names it. */
   function asleepPlane(f, name, how) {
     if (!f.suppressed) return record(f, "imported", how);
@@ -4513,20 +4552,7 @@ function importPart(doc, dir) {
   if (bodies.length) {
     // ---- The names SolidWorks' faces and edges have, which FabSys mates and sketches by ----
     const names = { wanted: 0, given: 0, missed: [] };
-    for (const b of sw) {
-      for (const face of b.faces.filter(x => x.name)) {
-        names.wanted++;
-        // A point on the face (the second export has one); failing that the middle of its box
-        const at = (face.point ? mm(face.point) : mid(mm(face.box.slice(0, 3)), mm(face.box.slice(3)))).map(tidy);
-        const tries = [...(face.normal ? [{ at, normal: face.normal.map(tidy) }] : []), { at }];
-        if (tries.some(sel => peet.apply({ op: "name_face", face: sel, name: face.name }).ok)) names.given++; else names.missed.push(face.name);
-      }
-      for (const edge of b.namedEdges || []) {
-        names.wanted++;
-        const sel = edge.start && edge.end ? { at: mid(mm(edge.start), mm(edge.end)).map(tidy) } : null;
-        if (sel && peet.apply({ op: "name_edge", edge: sel, name: edge.name }).ok) names.given++; else names.missed.push(edge.name);
-      }
-    }
+    nameGeometry(sw, names);
     if (names.wanted) report.names = names;
 
     // ---- SolidWorks' names for the sizes of features ----
@@ -4978,6 +5004,13 @@ function importPart(doc, dir) {
         const boxDiff = now.min && theirBox ? Math.max(...[...now.min, ...now.max].map((x, i) => Math.abs(x - theirBox[i]))) : null;
         entry.difference = { volume: off, box_mm: boxDiff };
         entry.verdict = off !== null && off < 1e-5 && boxDiff < 1e-3 ? "matches" : off !== null && off < 0.05 && boxDiff < 1e-3 ? "same size, volume differs" : "differs";
+        // Faces and edges SolidWorks names only in this configuration (on a flange it alone has), or that
+        // could not be named in the active one
+        const missed = new Set((report.names || { missed: [] }).missed);
+        const given = new Set(sw.flatMap(b => [...b.faces.filter(x => x.name).map(x => x.name), ...(b.namedEdges || []).map(x => x.name)]).filter(n => !missed.has(n)));
+        const more = { wanted: 0, given: 0, missed: [] };
+        nameGeometry(other.bodies || [], more, given);
+        if (more.wanted) entry.names = more;
         // A configuration with every feature suppressed has no body in SolidWorks: nor should it here
         if (!step && !(other.bodies || []).length) {
           entry.difference = { volume: now.volume_mm3 ? 1 : 0, box_mm: 0 };
