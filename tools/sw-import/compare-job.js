@@ -725,7 +725,13 @@ function compareJob(sw, peet, { ask, swJob, peetJob, tolerance = 1e-3, edited = 
       if (what && !m.defaultName && !madeUp(m) && !/^[a-z]+\d+$/i.test(pm.name)) (out.named_differently = out.named_differently || []).push({ solidworks: m.name, peetcad: pm.name });
       const peetState = pm.status === "ok" ? "ok" : pm.status === "suppressed" ? "suppressed" : "error";
       // A dry run says which mates there are, not whether they solve or are suppressed: only PeetCAD's failures count
-      const differs = m.known ? (m.suppressed ? "suppressed" : m.error ? "error" : "ok") !== peetState : peetState === "error";
+      let differs = m.known ? (m.suppressed ? "suppressed" : m.error ? "error" : "ok") !== peetState : peetState === "error";
+      // SolidWorks' export names no entity for an end on a suppressed component (it gives the assembly), so it
+      // can't count the mate as suppressed: PeetCAD's suppressed mate is that one
+      if (differs && peetState === "suppressed" && !m.suppressed && (m.entities || []).some(e => !e.kind)) {
+        differs = false;
+        out.of_suppressed_unnamed = (out.of_suppressed_unnamed || 0) + 1;
+      }
       if (differs)
         out.solve_differently.push({ mate: m.name, solidworks: !m.known ? "(dry run)" : m.suppressed ? "suppressed" : m.error ? `error ${m.error}` : "ok", peetcad: pm.status, ...(pm.message ? { message: pm.message } : {}) });
     }
