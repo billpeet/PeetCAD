@@ -100,7 +100,9 @@ rough placement decides which of several possible positions is taken.
   - `concentric`: two axes in line (a pin in a hole).
   - `parallel`: planes or lines.
   - `distance` (with `distance`): the gap between two planes, or between points, lines
-    and planes.
+    and planes. A straight edge and a plane: the edge is kept along the plane, the
+    distance away; an edge square to the plane (as SolidWorks takes one) is measured
+    from its middle and stays square.
   - `angle` (with `angle`, in degrees, between 0 and 180): between two planes or lines.
   - `fasten`: `a` and `b` are components alone (`"a": "Plate"`). `b` keeps its place
     relative to `a` as it is now.
