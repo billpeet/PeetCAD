@@ -25,7 +25,7 @@ using Json = Dictionary<string, object?>;
 internal static class Program
 {
     /// <summary>Raise this when the output changes shape, so the importer can tell exports apart.</summary>
-    private const int FormatVersion = 8;
+    private const int FormatVersion = 9;
     private const string FlatPatternSuffix = "SM-FLAT-PATTERN";
     private const int MaxRestarts = 5;
 
@@ -448,15 +448,28 @@ internal static class Program
 
             var equations = doc.GetEquationMgr();
             var list = new List<Json>();
-            if (equations != null)
-                for (var i = 0; i < equations.GetCount(); i++)
+            if (equations != null) {
+                for (var i = 0; i < equations.GetCount(); i++) {
+                    var at = i;
                     list.Add(new Json {
                         ["index"] = i,
                         ["expression"] = equations.Equation[i],
                         ["value"] = Try(() => (object)equations.Value[i]),
                         ["globalVariable"] = equations.GlobalVariable[i],
-                        ["disabled"] = equations.Disabled[i]
+                        // Format 9: each way the API states whether an equation is in force, read side by side.
+                        // `disabled` (IEquationMgr.Disabled) is true for every equation but the first in every
+                        // export so far, where SolidWorks applies them all
+                        ["disabled"] = Try(() => (object)equations.Disabled[at]),
+                        // Suppressed in this configuration (IEquationMgr.Suppression)
+                        ["suppressed"] = Try(() => (object)equations.Suppression[at]),
+                        // swInConfigurationOpts_e: 1 this configuration, 2 all, 3 the ones named
+                        ["configurationOption"] = Try(() => (object)equations.GetConfigurationOption(at))
                     });
+                }
+                result["equationStatus"] = Try(() => (object)equations.Status);
+                result["disabledEquationCount"] = Try(() => (object)equations.GetDisabledEquationCount());
+                result["automaticSolveOrder"] = Try(() => (object)equations.AutomaticSolveOrder);
+            }
             result["equations"] = list;
         }
 
@@ -936,6 +949,12 @@ internal static class Program
             : TryJson(() => DumpDefinition(doc, feature, type, suppressed), "definition of " + feature.Name);
         if (definition != null)
             result["definition"] = definition;
+
+        // Format 9: SolidWorks 2018 has a linear pattern's "up to reference" but no API for it (D1EndCondition and
+        // the rest are from 2019): what it runs up to is read from what editing the pattern selects
+        if (readSelections && !suppressed && type == "LPattern" && doc is PartDoc
+            && !(definition?["values"] is Json known && known.ContainsKey("D1EndCondition")))
+            result["editSelections"] = TryJson(() => EditSelections(doc, feature, "references"), "references of " + feature.Name);
 
         if (node.Children.Count > 0)
             result["sub"] = node.Children.Select(c => DumpFeature(doc, c)).ToList();
@@ -1821,15 +1840,21 @@ internal static class Program
     /// the edit is cancelled. Nothing is changed. Entities picked in the assembly give their geometry in the
     /// assembly's space; sketch segments give theirs in their sketch.
     /// </summary>
-    private static Json? PathSelections(ModelDoc2 doc, Feature feature)
+    private static Json? PathSelections(ModelDoc2 doc, Feature feature) => EditSelections(doc, feature, "path");
+
+    /// <summary>
+    /// What editing a feature (Edit Feature) selects, each with its selection mark (the PropertyManager box it
+    /// is in); the edit is then cancelled. For what SolidWorks 2018's API doesn't give otherwise.
+    /// </summary>
+    private static Json? EditSelections(ModelDoc2 doc, Feature feature, string what)
     {
         var sw = application;
-        Log("  Editing " + feature.Name + " to read its path");
+        Log("  Editing " + feature.Name + " to read its " + what);
         var selected = new List<Json>();
         try {
             doc.ClearSelection2(true);
             if (!feature.Select2(false, 0))
-                return new Json { ["error"] = "the mate could not be selected" };
+                return new Json { ["error"] = "the feature could not be selected" };
             doc.FeatEditDef();
             var manager = (SelectionMgr)doc.SelectionManager;
             var count = manager.GetSelectedObjectCount2(-1);

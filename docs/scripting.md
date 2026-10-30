@@ -507,8 +507,8 @@ with their defaults' types):
   null` makes it a row again.
 - `linear_pattern`'s `up_to` (`{"plane": ...}` or `{"point": ...}`) runs its first
   direction up to a reference, as SolidWorks' "Up to reference": the copies span the
-  distance from the seed's centre (the middle of the box round its faces, or `up_to_seed`)
-  to the reference, less `up_to_offset` (more with `up_to_reverse`). `up_to_keeps`
+  distance from the seed's centre (the middle of the box round its faces, or of its
+  sketch's points if it left no faces of its own; or `up_to_seed`) to the reference, less `up_to_offset` (more with `up_to_reverse`). `up_to_keeps`
   `"spacing"` (default) gives as many copies as fit, one exactly at the end included;
   `"count"` spreads `count` copies evenly. `"up_to": null` sets both again.
 - `count` for linear and circular part patterns, and a grid's `count2`, accept a number

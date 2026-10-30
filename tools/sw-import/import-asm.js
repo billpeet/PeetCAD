@@ -23,6 +23,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { displayPlan, applyDisplayPlan, componentLookOps } = require("./display-states");
+const { settleEquations } = require("./equation-state");
 
 const args = process.argv.slice(2);
 const option = name => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v; };
@@ -836,7 +837,7 @@ function inContextHolders(cfg, report) {
     const row = { component: ic.component, feature: ft.name, type: ft.type, references: refs, ...(ends.length ? { end: ends[0] } : {}) };
     // The part's equations that name another component (`"D1@LPattern1@Gear tray<1>.Part" = …`)
     const exp = ft.type === "EqnFolder" && exportOf(ic.file || "");
-    const part = exp ? JSON.parse(fs.readFileSync(exp)) : null;
+    const part = exp ? settleEquations(JSON.parse(fs.readFileSync(exp))) : null;
     const eqs = part ? ((part.configurations || [])[0] || {}).equations || [] : [];
     const theirs = eqs.filter(e => /<\d+>\.Part/i.test(e.expression || ""));
     if (theirs.length && theirs.every(e => e.disabled)) { row.result = "nothing to import"; row.why = `equations of the part on another component's dimension, all disabled in SolidWorks: ${theirs.map(e => e.expression).join("; ")}`; }
@@ -2222,7 +2223,7 @@ function importSub(c, all) {
   let made;
   try {
     if (exp) {
-      const j = JSON.parse(fs.readFileSync(exp));
+      const j = settleEquations(JSON.parse(fs.readFileSync(exp)));
       if (!j.configurations || !j.configurations.length) throw new Error("its export is empty: " + (j.error || ""));
       const r = importAssembly(name, j, file);
       made = { path: file, report: r, configurations: j.configurations.map(x => x.name) };
@@ -2246,7 +2247,7 @@ const inputs = fs.statSync(input).isDirectory()
   : [input];
 const summary = [];
 for (const file of inputs.filter(f => !only || path.basename(f).toLowerCase().includes(only.toLowerCase()))) {
-  const j = JSON.parse(fs.readFileSync(file));
+  const j = settleEquations(JSON.parse(fs.readFileSync(file)));
   const name = j.name || path.basename(file).replace(/\.sldasm\.swx\.json$/i, "");
   if (!j.configurations || !j.configurations.length) { summary.push({ name, verdict: "not exported", error: j.error }); console.log(`${"not exported".padEnd(60)} ${name}`); continue; }
   const started = Date.now();
