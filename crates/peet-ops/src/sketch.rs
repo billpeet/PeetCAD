@@ -96,6 +96,7 @@ pub enum Measure {
     Diameter,
     Angle,
     Offset,
+    SupplementaryAngle,
 }
 
 const RELATIONS: [(Relation, &str, &str); 14] = [
@@ -143,7 +144,7 @@ const RELATIONS: [(Relation, &str, &str); 14] = [
     ),
 ];
 
-const MEASURES: [(Measure, &str, &str); 9] = [
+const MEASURES: [(Measure, &str, &str); 10] = [
     (
         Measure::Distance,
         "distance",
@@ -172,6 +173,11 @@ const MEASURES: [(Measure, &str, &str); 9] = [
         Measure::Offset,
         "offset_distance",
         "a curve offset from another: two lines (parallel, the value apart) or two circles or arcs (concentric, radii the value apart)",
+    ),
+    (
+        Measure::SupplementaryAngle,
+        "supplementary_angle",
+        "two lines: the angle with the second turned round (180 less 'angle'), as SolidWorks measures an angle drawn on that side",
     ),
 ];
 
@@ -836,6 +842,7 @@ fn measure(
         (Measure::Radius, &[a]) => K::Radius(a),
         (Measure::Diameter, &[a]) => K::Diameter(a),
         (Measure::Angle, &[a, b]) => K::Angle(a, b),
+        (Measure::SupplementaryAngle, &[a, b]) => K::SupplementaryAngle(a, b),
         (Measure::Offset, &[a, b]) => K::Offset(a, b),
         (Measure::Length | Measure::Radius | Measure::Diameter, _) => {
             return Err("it takes one entity in 'of'".to_owned());

@@ -820,6 +820,19 @@ impl Ctx<'_> {
                         .with_k0(sign(current) * value.to_radians()),
                 );
             }
+            // The angle with the second line turned round is `value`: the one between
+            // their directions, on the same side, is 180° less.
+            K::SupplementaryAngle(l1, l2) => {
+                let (a1, b1) = self.line_pts(l1);
+                let (a2, b2) = self.line_pts(l2);
+                let d1 = self.pos(b1) - self.pos(a1);
+                let d2 = self.pos(b2) - self.pos(a2);
+                let current = d1.perp_dot(d2).atan2(d1.dot(d2));
+                out.push(
+                    self.four(EqKind::Angle, l1, l2)
+                        .with_k0(sign(current) * (180.0 - value).to_radians()),
+                );
+            }
         }
     }
 }
