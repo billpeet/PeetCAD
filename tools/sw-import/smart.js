@@ -12,9 +12,12 @@
  * part's coordinates, and its end condition). For each library feature of a template, each of its cuts and
  * holes becomes a sketch of the part on a plane where SolidWorks' training target's face was, and a
  * `smart_feature` of it, reference number = the library feature's (the order FabSys gives the faces in). A
- * pattern's copies are drawn in its seed's sketch. A line, arc or circle that SolidWorks converted from the
- * part's own edges is projected from the matching edge (`convert`), so it follows the part when it is resized;
- * the rest is drawn where SolidWorks had it. Writes smart-report.json in the library folder.
+ * pattern is a linear pattern of the smart feature (made where it is applied), its count and spacing set by the
+ * library feature's equations from the part's sizes; one along no axis has its copies drawn in its seed's sketch.
+ * A line, arc or circle that SolidWorks converted from the part's own edges is projected from the matching edge
+ * (`convert`), so it follows the part when it is resized; a hole on one of the part's own holes is concentric
+ * with it; the rest is drawn where it comes to on the part as it is now. Writes smart-report.json in the library
+ * folder.
  */
 const fs = require("fs");
 const path = require("path");
@@ -192,6 +195,91 @@ function followingItems(segs, ps, plane, edges, counts) {
   return items;
 }
 
+/** The box round points (mm), or null for none. */
+function boxOf(points) {
+  if (!points.length) return null;
+  return { min: [0, 1, 2].map(k => Math.min(...points.map(p => p[k]))), max: [0, 1, 2].map(k => Math.max(...points.map(p => p[k]))) };
+}
+
+/**
+ * Where a point SolidWorks placed on the part when it made the library feature comes to on the part as it is
+ * now: as far from the side of the part's outline it is nearest as it was then, across the plane of normal `n`.
+ * `trained` is the outline then (the box of the edges SolidWorks converted), `now` the part's box now.
+ */
+function moveWith(p, trained, now, n) {
+  if (!trained || !now) return p;
+  return p.map((v, k) => {
+    if (Math.abs(n[k]) > 0.5 || trained.max[k] - trained.min[k] < 1e-6) return v;
+    return v - trained.min[k] <= trained.max[k] - v ? now.min[k] + (v - trained.min[k]) : now.max[k] - (trained.max[k] - v);
+  });
+}
+
+/**
+ * Draw items for a hole wizard feature's holes that follow the part, as SolidWorks' do. A hole SolidWorks
+ * placed on a hole of the part's own (its sketch converted the part's hole there: Gland Plate's clearance holes
+ * on its fixing holes) is drawn concentric with that hole, projected from the part, so that it goes where the
+ * part's hole goes when the part is resized. Each hole is where it comes to on the part as it is now
+ * (`moveWith`), and keeps its size.
+ */
+function holeItems(f, sk, segs, ps, plane, edges, trained, now, counts) {
+  const flat = p => { const d = sub(p, ps.o); return [tidy(dot(d, ps.x)), tidy(dot(d, ps.y))]; };
+  const across = d => len(sub(d, mul(plane.n, dot(d, plane.n))));
+  const converted = (sk.segments || []).filter(g => !g.deleted && g.external_reference && g.kind === "circle" && g.centre_3d);
+  const items = [];
+  segs.forEach((g, i) => {
+    const c = mm(g.centre_3d.smart), r = g.radius * MM;
+    const at = moveWith(c, trained, now, plane.n);
+    counts.moved = Math.max(counts.moved || 0, len(sub(at, c)));
+    const label = `h${i}`;
+    items.push({ type: "circle", center: flat(at), radius: tidy(r), as: label }, { type: "radius", of: [label], value: tidy(r) });
+    counts.drawn++;
+    const under = converted.find(x => len(sub(mm(x.centre_3d.smart), c)) < 0.01);
+    const edge = under && edges.find(e => e.curve === "circle" && e.axis && e.middle && Math.abs(Math.abs(dot(e.axis, plane.n)) - 1) < 1e-6
+      && Math.abs(e.radius - under.radius * MM) < 0.01 && across(sub(e.center, at)) < 0.05);
+    if (!edge) return;
+    items.push({ type: "project", edge: { at: edge.middle }, as: `p${i}` }, { type: "concentric", of: [label, `p${i}`] });
+    counts.concentric = (counts.concentric || 0) + 1;
+  });
+  return items;
+}
+
+/**
+ * Sets what one of a library feature's equations sets, where the smart part has it: a pattern's count (D1) or
+ * spacing (D3), from the part's sizes (SolidWorks' "Length@Sketch1@Gland Plate<1>.Part" is the part's own
+ * "Length@Sketch1"; the library feature's own pattern values are the pattern's count and spacing; "Thickness"
+ * is the sheet's). Why it was not set, or null.
+ */
+function libraryEquation(file, text, patternsMade) {
+  const m = /^\s*"([^"]+)"\s*=\s*([\s\S]*)$/.exec(text);
+  if (!m) return "not understood";
+  const FIELD = { D1: "count", D3: "spacing" };
+  const [short, owner] = m[1].trim().split("@");
+  const pattern = patternsMade.get(owner);
+  const field = pattern && FIELD[short];
+  if (!field) return "it sets something the smart features made here don't have";
+  const addresses = new Set((ask(file, { op: "dimensions" }).dimensions || []).map(d => d.address));
+  let failed = null;
+  const expression = m[2].replace(/"([^"]*)"/g, (whole, inner) => {
+    const parts = inner.trim().split("@");
+    if (parts.length === 1) {
+      if (parts[0] === "Thickness" && addresses.has("Thickness@Sheet-Metal")) return "\"Thickness@Sheet-Metal\"";
+      failed = `it reads ${inner}, which the part does not have`;
+      return "0";
+    }
+    const [name, of] = parts;
+    if (parts.length === 2 && patternsMade.has(of) && FIELD[name]) return `"${FIELD[name]}@${patternsMade.get(of)}"`;
+    if (parts.length <= 3 && addresses.has(`${name}@${of}`)) return `"${name}@${of}"`;
+    failed = `it reads ${inner}, which the part does not have`;
+    return "0";
+  }).trim();
+  if (failed) return failed;
+  let r = apply(file, { op: "edit", feature: pattern, [field]: expression });
+  // SolidWorks' sizes are plain numbers in millimetres; PeetCAD's are lengths: a count worked out from them is
+  // a length, which in millimetres is SolidWorks' number
+  if (!r.ok && field === "count" && /number/.test(r.error || "")) r = apply(file, { op: "edit", feature: pattern, count: `(${expression}) / 1mm` });
+  return r.ok ? null : r.error;
+}
+
 /** Draw items for decoded segments, moved by `shift` (mm), in the PeetCAD sketch's plane `ps`. */
 function drawItems(segs, ps, plane, edges, shift, counts) {
   const flat = p => { const d = sub(add(p, shift), ps.o); return [tidy(dot(d, ps.x)), tidy(dot(d, ps.y))]; };
@@ -227,11 +315,19 @@ for (const t of defs.templates) {
   const listed = ask(file, { op: "features" });
   if ((listed.features || []).some(f => f.type === "Smart feature") && !force) { row.left.push("has smart features already"); continue; }
   const edges = ask(file, { op: "edges" }).edges || [];
+  const partBox = boxOf(edges.filter(e => e.curve === "line").flatMap(e => [e.from, e.to]));
   for (const lf of t.library_features) {
     const libName = (lf.lf_name || `Library feature ${lf.index}`).replace(/_lf$/i, "");
     const features = lf.features || [];
     // What each cut or hole draws, so a pattern after it can copy it
     const drawnBy = new Map();
+    // The library feature's patterns as made here, by SolidWorks' name
+    const patternsMade = new Map();
+    // The part's outline where SolidWorks made the library feature: the box of the part's edges its sketches
+    // converted, which a hole is placed against when the part is another size now
+    const trained = boxOf(features.flatMap(x => [x.sketch, ...(x.sketches || [])]).filter(Boolean)
+      .flatMap(s => (s.segments || []).filter(g => !g.deleted && g.external_reference && g.kind === "line" && g.start_3d && g.end_3d))
+      .flatMap(g => [mm(g.start_3d.smart), mm(g.end_3d.smart)]));
     let planeMade = null;
     for (const f of features) {
       const counts = { drawn: 0, converted: 0 };
@@ -250,6 +346,20 @@ for (const t of defs.templates) {
         const g = f.pattern.direction1_guess || {};
         const seed = [...drawnBy.values()].pop();
         if (!dir || !g.count || !g.spacing || !seed) { row.left.push(`${libName} ${f.name}: the pattern's direction or seed is not known`); continue; }
+        // A pattern of the smart feature, which apply_smart_features makes where it is applied with the count and
+        // spacing it has then (the library feature's equations give them from the part's sizes, below). Failing
+        // that, its copies drawn in the seed's sketch, as many as SolidWorks had.
+        const axis = [["x", [1, 0, 0]], ["y", [0, 1, 0]], ["z", [0, 0, 1]]].find(([, a]) => Math.abs(Math.abs(dot(a, dir)) - 1) < 1e-3);
+        if (axis) {
+          const patternName = `${libName} ${f.name}`;
+          const made = apply(file, { op: "linear_pattern", name: patternName, features: [seed.smart], direction: axis[0], flip: dot(axis[1], dir) < 0, spacing: tidy(g.spacing * MM), count: Math.round(g.count) });
+          if (made.ok) {
+            patternsMade.set(f.name, patternName);
+            row.smart_features.push({ feature: seed.smart, pattern: patternName, count: Math.round(g.count), spacing: tidy(g.spacing * MM) });
+            continue;
+          }
+          row.left.push(`${libName} ${f.name}: drawn as copies, as it can't be a pattern (${made.error})`);
+        }
         const items = [];
         for (let k = 1; k < Math.round(g.count); k++) items.push(...drawItems(seed.segs, seed.ps, seed.plane, edges, mul(dir, k * g.spacing * MM), counts));
         const r = apply(file, { op: "draw", sketch: seed.sketch, draw: items });
@@ -275,7 +385,7 @@ for (const t of defs.templates) {
       if (!started.ok || !started.plane) { row.left.push(`${libName} ${f.name}: ${started.error}`); continue; }
       const ps = { o: started.plane.origin, x: started.plane.x, y: started.plane.y, n: started.plane.normal };
       // Following the part where SolidWorks' does, else drawn where SolidWorks had it
-      const following = followingItems(segs, ps, plane, edges, counts);
+      const following = f.type === "hole_wizard" ? holeItems(f, sk, segs, ps, plane, edges, trained, partBox, counts) : followingItems(segs, ps, plane, edges, counts);
       let drawn = following ? apply(file, { op: "draw", sketch: sketchName, draw: following }) : null;
       if (drawn && !drawn.ok) row.left.push(`${libName} ${f.name}: drawn fixed, as it can't follow the part (${drawn.error})`);
       if (!drawn || !drawn.ok) {
@@ -290,7 +400,14 @@ for (const t of defs.templates) {
       const made = apply(file, { op: "smart_feature", name: smartName, sketch: sketchName, reference: lf.index, ...end, ...(reverse ? { reverse: true } : {}) });
       if (!made.ok) { row.left.push(`${libName} ${f.name}: ${made.error}`); continue; }
       drawnBy.set(f.name, { segs, ps, plane, sketch: sketchName, smart: smartName });
-      row.smart_features.push({ feature: smartName, from: f.name, reference: lf.index, ...end, reverse, drawn: counts.drawn, converted: counts.converted, ...(counts.moved ? { moved_mm: tidy(counts.moved) } : {}) });
+      row.smart_features.push({ feature: smartName, from: f.name, reference: lf.index, ...end, reverse, drawn: counts.drawn, converted: counts.converted, ...(counts.moved ? { moved_mm: tidy(counts.moved) } : {}), ...(counts.concentric ? { concentric: counts.concentric } : {}) });
+    }
+    // The library feature's equations, which SolidWorks works out against the part when the feature is applied:
+    // a pattern's count and spacing from the part's sizes
+    for (const e of lf.equations || []) {
+      const why = libraryEquation(file, e, patternsMade);
+      if (why) row.left.push(`${libName} equation ${e}: ${why}`);
+      else (row.equations = row.equations || []).push(e);
     }
   }
   console.log(`${String(row.smart_features.length).padStart(3)} smart features  ${stem}${row.left.length ? "  (left out: " + row.left.join("; ") + ")" : ""}`);

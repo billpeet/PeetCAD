@@ -249,6 +249,13 @@ the arm is turned to 60° and then mated to turn to 90°, along Y.
 - **Mate into it** with a component path (`["Hinge", "Arm"]`), as for any part inside a
   sub-assembly. Then a mate that a rigid sub-assembly would fail ("can't hold") can
   turn the arm instead.
+- **A leaf facing the wrong way swings round its pin.** A mate to an arm that faces the
+  other way to the one the mate asks for fails ("can't be anti-aligned") while the
+  sub-assembly is rigid, and stays in the list as failed, as SolidWorks keeps it. Make
+  the sub-assembly flexible and the arm is swung round its pin to suit the mate (where
+  its own mates leave it free to), rather than the whole sub-assembly turned over, which
+  would undo the mates before. A door whose hinge leaves were saved facing different
+  ways comes right once it is flexible.
 - **Each instance is posed on its own**: two instances of one hinge can be open to
   different angles. The sub-assembly's file is not changed.
 - **`place`** takes a path to a component that moves in a flexible sub-assembly:
@@ -779,8 +786,10 @@ FabSys's `ApplySmartFeatures` is `apply_smart_features`.
 {"op": "new", "keep": true}
 {"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [40, 20]}]}
 {"op": "extrude", "sketch": "Sketch1", "depth": 10}
-{"op": "sketch", "on": "top", "name": "Hinge Holes", "draw": [{"type": "circle", "center": [10, 10], "radius": 3}, {"type": "circle", "center": [30, 10], "radius": 3}]}
+{"op": "set_parameter", "name": "Holes", "value": "2"}
+{"op": "sketch", "on": "top", "name": "Hinge Holes", "draw": [{"type": "circle", "center": [10, 10], "radius": 3}]}
 {"op": "smart_feature", "name": "HingeHoles", "sketch": "Hinge Holes"}
+{"op": "linear_pattern", "features": ["HingeHoles"], "direction": "x", "spacing": 20, "count": "Holes"}
 {"op": "new", "assembly": true, "keep": true}
 {"op": "insert", "part": 1, "name": "Door-1", "fixed": true}
 {"op": "insert", "part": 2, "name": "Hinge-1", "at": [50, 60, 2]}
@@ -800,6 +809,13 @@ they move with it.
   its place in SolidWorks' order of references, used where none lies against it. `end`: `sheet` (default: through the sheet or the
   material the face is on), `blind` with `depth`, `through_all`; `reverse` cuts away from
   the part. It changes nothing in the part itself. Several smart features may share a face.
+- **Patterned: `linear_pattern` of smart features (no other features with them).**
+  The cut is patterned where it is applied, with the count and spacing the pattern has in
+  the smart part at that moment: give them as expressions of the part's sizes
+  (`"(INT((\"Length@Sketch1\" - 25) / 175 + 0.999999) + 1) / 1mm"`) and size the part
+  before applying, as SolidWorks works out a library feature's equations when it is
+  applied. Its direction must come to an axis of the part it is applied in. The applied
+  pattern doesn't change if the smart part is resized afterwards: apply again.
 - **In the assembly: `apply_smart_features`.** `component` is the smart component (a path
   for one in a sub-assembly, as `["Door Assembly-1", "Hinge Assembly-1", "HingeMale-1"]`);
   `references` the faces, in order, each a mate end on the part to cut (a path for a part

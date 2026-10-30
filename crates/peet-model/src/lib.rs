@@ -100,7 +100,9 @@ pub use model::{
 };
 pub use naming::{Body, EdgeRef, FaceName, FaceOrigin, FaceRef, FaceRole, Found, VertexRef};
 pub use placement::face_sketch_plane;
-pub use regen::{Engine, Evaluation, FeatureState, Instance, Output, SketchStatus, Stats, Status};
+pub use regen::{
+    Engine, Evaluation, FeatureState, Instance, Output, SketchStatus, Stats, Status, smart_seeds,
+};
 pub use revolve::{
     RevolveAxisRef, RevolveFeature, RevolveInput, apply_revolve, default_axis, sketch_axis,
 };

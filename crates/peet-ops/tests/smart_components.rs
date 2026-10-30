@@ -378,3 +378,114 @@ fn a_hinge_in_a_sub_assembly_cuts_a_door_in_another() {
         .collect();
     assert_eq!(statuses, ["in_context", "in_context"], "{listed}");
 }
+
+/// A hinge whose hole is a smart feature patterned along x, as many as its `Holes`
+/// parameter says (SolidWorks' library feature patterns, their count from an equation).
+fn patterned_hinge(dir: &std::path::Path, holes: u32) -> String {
+    let hinge = dir
+        .join(format!("Hinge{holes}.peet"))
+        .to_string_lossy()
+        .into_owned();
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "set_parameter", "name": "Holes", "value": "2"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [140, 20]}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "extrude", "sketch": "Sketch1", "depth": 10}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "name": "Hinge Holes", "draw": [
+            {"type": "circle", "center": [10, 10], "radius": 3}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "smart_feature", "name": "HingeHoles", "sketch": "Hinge Holes"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "linear_pattern", "name": "LPattern1", "features": ["HingeHoles"], "direction": "x", "spacing": 40, "count": "Holes"}),
+    );
+    // The pattern changes nothing in the hinge itself, as its smart feature doesn't
+    let bodies = ok(&mut doc, json!({"op": "bodies"}));
+    assert!(
+        (bodies["bodies"][0]["volume_mm3"].as_f64().unwrap() - 28_000.0).abs() < 1e-6,
+        "{bodies}"
+    );
+    // Sized before it is applied, as FabSys sizes a template
+    ok(
+        &mut doc,
+        json!({"op": "set_parameter", "name": "Holes", "value": holes.to_string()}),
+    );
+    let status = ok(&mut doc, json!({"op": "status"}));
+    assert_eq!(status["failures"], json!([]), "{status}");
+    ok(&mut doc, json!({"op": "save", "path": hinge}));
+    hinge
+}
+
+#[test]
+fn a_smart_features_pattern_is_made_where_it_is_applied_as_many_as_it_comes_to() {
+    for holes in [3, 4] {
+        let dir = temp(&format!("pattern{holes}"));
+        let (door, _) = parts(&dir);
+        let hinge = patterned_hinge(&dir, holes);
+        let mut doc = Document::default();
+        ok(&mut doc, json!({"op": "new", "assembly": true}));
+        ok(
+            &mut doc,
+            json!({"op": "insert", "path": door, "name": "Door-1", "fixed": true}),
+        );
+        ok(
+            &mut doc,
+            json!({"op": "insert", "path": hinge, "name": "Hinge-1", "at": [50, 60, 2]}),
+        );
+        let applied = ok(
+            &mut doc,
+            json!({"op": "apply_smart_features", "component": "Hinge-1", "references": [{"component": "Door-1", "face": {"normal": [0, 0, 1]}}]}),
+        );
+        assert_eq!(
+            applied["applied"][0]["patterns"],
+            json!([{"feature": "Smart-Feature1<Hinge-1> LPattern1", "count": holes}]),
+            "{applied}"
+        );
+        let cut = 120_000.0 - door_volume(&doc);
+        assert!(
+            (cut - f64::from(holes) * HOLE).abs() < 1e-3,
+            "{holes} holes: {cut} cut"
+        );
+    }
+}
+
+#[test]
+fn a_smart_feature_is_patterned_only_with_smart_features() {
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [40, 20]}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "extrude", "sketch": "Sketch1", "depth": 10}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "name": "Holes", "draw": [{"type": "circle", "center": [10, 10], "radius": 3}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "smart_feature", "name": "HingeHoles", "sketch": "Holes"}),
+    );
+    let reply = apply_json(
+        &mut doc,
+        &json!({"op": "linear_pattern", "features": ["Extrude1", "HingeHoles"], "direction": "x", "spacing": 50, "count": 2}),
+        Undo::Step,
+    );
+    let text = reply.json.to_string();
+    assert!(text.contains("only with other smart features"), "{text}");
+}

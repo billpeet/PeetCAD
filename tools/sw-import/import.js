@@ -56,6 +56,10 @@ const mid = (a, b) => mul(add(a, b), 0.5);
 const mm = p => p.map(v => v * MM);
 const tidy = v => Math.abs(v) < 5e-7 ? 0 : +v.toFixed(6);
 const AXES = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+/** The normals of PeetCAD's standard planes, in the exports' axes. */
+const STANDARD_NORMALS = { right: [1, 0, 0], front: [0, -1, 0], top: [0, 0, 1] };
+/** A standard axis lying in each standard plane: the plane turned half round it is itself, facing the other way. */
+const AXIS_IN = { right: "z", front: "z", top: "x" };
 
 /** A SolidWorks transform from model space to a sketch or plane: its axes and origin in the model, in mm. */
 function frameOf(a) {
@@ -74,6 +78,42 @@ const fromSketch = (f, p) => add(add(add(f.o, mul(f.x, p.x * MM)), mul(f.y, p.y 
 const samePlane = (a, b) => Math.abs(Math.abs(dot(a.n, b.n)) - 1) < 1e-7 && Math.abs(dot(sub(a.o, b.o), b.n)) < 1e-4;
 /** A sketch point's place as a key: two points a tenth of a micron apart are one. */
 const spot = p => `${Math.round(p.x * 1e7)},${Math.round(p.y * 1e7)}`;
+/**
+ * The relations a SolidWorks slot keeps to itself, which the export lists the slot for (format 6 on) but not
+ * among the sketch's relations: its centreline from one arc's centre to the other's, its sides tangent to its
+ * arcs, its arcs the same size, and its centre point at the middle of its centreline. Without them a slot whose
+ * centre point a dimension moves leaves its arcs and sides behind (Wall Middle's Cut-Extrude1 at another height).
+ * As PeetCAD relations between what `drawn` (by the label "e<segment>" or "p<point>") gave each; nothing for a
+ * part of a slot that wasn't drawn.
+ */
+function slotRelations(s, drawn) {
+  const idOf = p => p && p.id ? p.id.join(".") : null;
+  const out = [];
+  for (const slot of s.slots || []) {
+    const ids = (slot.points || []).slice(0, 2).map(idOf);
+    if (ids.length < 2 || ids.some(id => !id)) continue;
+    const arcs = ids.map(id => s.segments.findIndex(g => g.type === "arc" && !g.circle && idOf(g.center) === id));
+    if (arcs.some(k => k < 0)) continue;
+    const [a, b] = arcs.map(k => drawn("e" + k));
+    if (!a || !b || a.center === undefined || b.center === undefined) continue;
+    const centreline = s.segments.findIndex(g => g.type === "line" && g.construction && [idOf(g.start), idOf(g.end)].sort().join() === [...ids].sort().join());
+    const line = centreline >= 0 && drawn("e" + centreline);
+    if (line && line.start !== undefined) {
+      const g = s.segments[centreline];
+      ids.forEach((id, j) => out.push({ type: "coincident", of: [[a, b][j].center, idOf(g.start) === id ? line.start : line.end] }));
+      const mid = s.points.findIndex(p => idOf(p) === idOf(slot.centerPoint));
+      const point = mid >= 0 && drawn("p" + mid);
+      if (point) out.push({ type: "midpoint", of: [point.id, line.id] });
+    }
+    const arcEnds = arcs.map(k => [idOf(s.segments[k].start), idOf(s.segments[k].end)]);
+    s.segments.forEach((g, i) => {
+      if (g.type !== "line" || g.construction || !drawn("e" + i)) return;
+      arcEnds.forEach((ends, j) => { if (ends.includes(idOf(g.start)) || ends.includes(idOf(g.end))) out.push({ type: "tangent", of: [drawn("e" + i).id, [a, b][j].id] }); });
+    });
+    out.push({ type: "equal", of: [a.id, b.id] });
+  }
+  return out;
+}
 /** A sketch text's point: the sketch point with the text's id (SolidWorks lists it with the points). */
 const textPoint = (s, g) => s.points.find(p => p.id && p.id.join() === g.id.join()) || null;
 /** The fonts a text is fitted with, where the export does not say: SolidWorks' default and its styles. */
@@ -636,6 +676,9 @@ function importPart(doc, dir) {
     if (away > 1e-4) report.notes.push(`${name} is on a face ${away.toFixed(3)} mm from where SolidWorks has it.`);
     const result = { name: reply.created[0].name, toPeet, frame: pf, partial, dimensions: new Map(), ids: new Map(), values: new Map((f.dimensions || []).map(d => [d.fullName, d.value])) };
     for (const o of own) { const d = (reply.drawn || []).find(x => x.as === o.as); if (d && o.g) result.ids.set(o.g.id.join("."), d.id); }
+    if (!draw) for (const item of slotRelations(s, as => (reply.drawn || []).find(x => x.as === as))) {
+      if (peet.ask({ op: "draw", sketch: result.name, draw: [item] }).ok) peet.apply({ op: "draw", sketch: result.name, draw: [item] });
+    }
     // What was drawn where SolidWorks has it, in the model, for another sketch that relates to it
     result.drawnAt = [];
     for (const o of own) {
@@ -1833,7 +1876,18 @@ function importPart(doc, dir) {
   }
 
   /** The faces a feature has in SolidWorks' final body. */
-  const facesOf = name => (cur.bodies || []).flatMap(b => b.faces).filter(face => face.feature === name);
+  // A feature suppressed in every configuration has no faces in SolidWorks' body; an export made with
+  // `--unsuppress-always-off` has the faces it makes when unsuppressed (`readUnsuppressed`), which stand in
+  const readFaces = new Map();
+  const unsuppressedFaces = () => {
+    if (!readFaces.has(cur)) {
+      const list = [];
+      (function walk(xs) { for (const x of xs || []) { if (x.readUnsuppressed && x.readUnsuppressed.faces) list.push(...x.readUnsuppressed.faces); walk(x.sub); } })(cur.features);
+      readFaces.set(cur, list);
+    }
+    return readFaces.get(cur);
+  };
+  const facesOf = name => [...(cur.bodies || []).flatMap(b => b.faces), ...unsuppressedFaces()].filter(face => face.feature === name);
 
   /**
    * A sketch on the flat face of the part through a point, looking along a direction, for geometry that comes
@@ -2719,7 +2773,8 @@ function importPart(doc, dir) {
         for (const flip of distance > 1e-9 ? [false, true] : [false]) {
           if (!peet.apply({ op: "plane", from: turned, distance, flip, name }).ok) continue;
           const where = probe(name);
-          if (parallel(where) && Math.abs(dot(sub(where.o, pf.o), pf.n)) < 1e-3) {
+          // Facing the way SolidWorks' does, as mates to it need
+          if (parallel(where) && dot(where.n, pf.n) > 0 && Math.abs(dot(sub(where.o, pf.o), pf.n)) < 1e-3) {
             // The part has the two planes: the script keeps them and not the tries
             peet.script.length = mark;
             peet.script.push({ op: "plane", from: base, about, angle: tidy(angle), name: turned }, { op: "plane", from: turned, distance, flip, name });
@@ -3075,6 +3130,169 @@ function importPart(doc, dir) {
     }
   }
 
+  /**
+   * Ties a mitre flange's profile to the corner of the edge it starts at, as SolidWorks' is (its first point is
+   * coincident with the edge's end), so that the profile follows the edge when the part's sizes change: the
+   * model's vertex there (at one of `corners`, the ends of the flange's edges, or a sheet's `thickness` from one)
+   * is projected into the sketch and the profile's free end on it made coincident with it. A copy of SolidWorks'
+   * profile (`copy`, moved a thickness across) has none of its relations: each line is kept horizontal or
+   * vertical and as long as it is. Nothing that would over-define the sketch is added. Whether the profile is
+   * tied.
+   */
+  function anchorProfile(sketchName, copy, corners, thickness) {
+    const at = peet.ask({ op: "feature", feature: sketchName });
+    if (!at.ok || !at.plane) return false;
+    const lines = (at.entities || []).filter(e => e.type === "line" && !e.construction);
+    const uses = new Map();
+    for (const l of lines) for (const id of [l.start, l.end]) uses.set(id, (uses.get(id) || 0) + 1);
+    const ends = lines.flatMap(l => [[l.start, l.from], [l.end, l.to]]).filter(([id]) => uses.get(id) === 1);
+    const { origin, x, y } = at.plane;
+    const fits = item => {
+      const tried = peet.ask({ op: "draw", sketch: sketchName, draw: [item] });
+      return tried.ok && !/over/.test(tried.definition || "") ? tried : null;
+    };
+    let tied = false;
+    for (const [id, p] of ends) {
+      const where = add(add(origin, mul(x, p[0])), mul(y, p[1])).map(tidy);
+      if (!corners.some(c => Math.hypot(...sub(c, where)) < thickness + 1e-4)) continue;
+      const item = { type: "project", vertex: { at: where } };
+      if (!fits(item)) continue;
+      const made = (peet.apply({ op: "draw", sketch: sketchName, draw: [item] }).drawn || [])[0];
+      const vertex = made && (made.id !== undefined ? made.id : (made.points || [])[0]);
+      if (vertex === undefined) continue;
+      const coincident = { type: "coincident", of: [id, vertex] };
+      if (fits(coincident)) { peet.apply({ op: "draw", sketch: sketchName, draw: [coincident] }); tied = true; break; }
+    }
+    if (tied && copy) for (const l of lines) {
+      const [dx, dy] = [l.to[0] - l.from[0], l.to[1] - l.from[1]];
+      const items = [Math.abs(dy) < 1e-9 ? { type: "horizontal", of: [l.id] } : Math.abs(dx) < 1e-9 ? { type: "vertical", of: [l.id] } : null,
+        { type: "distance", of: [l.start, l.end], value: tidy(Math.hypot(dx, dy)) }].filter(Boolean);
+      for (const item of items) if (fits(item)) peet.apply({ op: "draw", sketch: sketchName, draw: [item] });
+    }
+    return tied;
+  }
+
+  /**
+   * A reference plane made as SolidWorks made it, from the faces, planes and edges it was defined from, so that
+   * it follows the part when its sizes change: halfway between two faces, on a face or a plane, at a distance
+   * from a face, or square to an edge at its end (on the face there). It must come out where SolidWorks has it,
+   * facing the way SolidWorks' does (a mid plane faces the way of its first face, a plane on a face the way of
+   * the face); with `eitherWay`, facing either way. Called `name`; how it was made, or null with nothing added.
+   */
+  function referencedPlane(f, pf, name, eitherWay = false) {
+    const v = values(f);
+    const refs = [0, 1, 2].map(i => ({ ref: v[`Reference[${i}]`], how: v[`Constraint[${i}]`], by: v[`AngleOrDistance[${i}]`] || 0 })).filter(r => r.ref);
+    const face = r => r.ref.kind === "face" && r.ref.surface === "plane" && r.ref.point && r.ref.normal ? { at: mm(r.ref.point).map(tidy), normal: r.ref.normal.map(tidy) } : null;
+    const planeRef = r => r.ref.kind === "feature" && r.ref.type === "RefPlane" && planes.has(r.ref.name) ? planes.get(r.ref.name) : null;
+    const tries = [];
+    const kinds = refs.map(r => r.how).join(",");
+    if (kinds === "128,128" && refs.every(face)) {
+      const [a, b] = refs.map(face);
+      const how = "halfway between the two faces it was made from";
+      tries.push([{ a, b }, how], [{ a: b, b: a }, how]);
+    } else if (refs.length === 1 && (refs[0].how === 4 || refs[0].how === 8) && (face(refs[0]) || planeRef(refs[0]))) {
+      const from = face(refs[0]) || planeRef(refs[0]);
+      const distance = refs[0].how === 8 ? tidy(refs[0].by * MM) : 0;
+      const what = face(refs[0]) ? "face" : "plane";
+      const how = distance ? `at a distance from the ${what} it was made from` : `on the ${what} it was made from`;
+      for (const flip of distance ? [false, true] : [false]) tries.push([{ from, distance, flip }, how]);
+    } else if (kinds === "2,4" && refs[0].ref.kind === "edge" && refs[0].ref.curve === "line") {
+      // Square to an edge through a point of it, which in the library is the edge's end: the face of the
+      // part there that is square to the edge
+      const end = [mm(refs[0].ref.start), mm(refs[0].ref.end)].find(e => Math.abs(dot(sub(e, pf.o), pf.n)) < 1e-4);
+      if (end) for (const normal of [pf.n, mul(pf.n, -1)]) {
+        tries.push([{ from: { at: end.map(tidy), normal: normal.map(tidy) }, distance: 0 }, "square to the edge it was made from, on the face at its end"]);
+      }
+    }
+    const mark = peet.script.length;
+    for (const [fields, how] of tries) {
+      const op = { op: "plane", ...fields, name };
+      if (!peet.ask(op).ok || !peet.apply(op).ok) continue;
+      const where = probe(name);
+      const facing = where && samePlane(where, pf) && (dot(where.n, pf.n) > 0 ? how
+        : eitherWay ? how + ", facing the other way to SolidWorks' (PeetCAD's plane on a face faces the way the face does)" : null);
+      if (facing) {
+        // The tries are left out of the script
+        peet.script.length = mark;
+        peet.script.push(op);
+        return facing;
+      }
+      peet.apply({ op: "delete", feature: name });
+    }
+    peet.script.length = mark;
+    return null;
+  }
+
+  /**
+   * A fixed plane `distance` along the normal of a standard plane `from` (against it with `flip`), facing the way
+   * SolidWorks' plane `pf` does: where that is against the standard plane's normal, the standard plane is turned
+   * half round an axis in it first (that plane is called `name` turned). Whether it came out where `pf` is,
+   * facing its way.
+   */
+  function fixedPlane(from, distance, flip, name, pf) {
+    const mark = peet.script.length;
+    const against = dot(pf.n, STANDARD_NORMALS[from]) < 0;
+    const turned = name + " turned";
+    const turn = { op: "plane", from, about: AXIS_IN[from], angle: 180 };
+    // On the standard plane itself, facing the other way, the turned plane is the plane
+    const helper = against && distance > 0;
+    if (helper && !peet.apply({ ...turn, name: turned }).ok) return false;
+    const op = !against ? { op: "plane", from, distance: tidy(distance), flip, name } : helper ? { op: "plane", from: turned, distance: tidy(distance), flip, name } : { ...turn, name };
+    if (peet.apply(op).ok) {
+      const where = probe(name);
+      if (where && samePlane(where, pf) && dot(where.n, pf.n) > 0) {
+        // The tries are left out of the script
+        peet.script.length = mark;
+        if (helper) peet.script.push({ ...turn, name: turned });
+        peet.script.push(op);
+        return true;
+      }
+      peet.apply({ op: "delete", feature: name });
+    }
+    if (helper) peet.apply({ op: "delete", feature: turned });
+    peet.script.length = mark;
+    return false;
+  }
+
+  /**
+   * Gives the faces and edges of SolidWorks' `bodies` that have names those names, in the configuration shown,
+   * counting them in `names` ({ wanted, given, missed }); names in `skip` are left (given already). A face is
+   * found by a point on it and its normal, by the point alone, and failing those (a point where the face meets
+   * a bend, on both) as the one flat face of the part in the face's plane, facing its way, as big as it is. A
+   * closed round edge (a hole's) by a point on its circle.
+   */
+  function nameGeometry(bodies, names, skip = new Set()) {
+    let faces = null;
+    for (const b of bodies) {
+      for (const face of b.faces.filter(x => x.name && !skip.has(x.name))) {
+        names.wanted++;
+        // A point on the face (the second export has one); failing that the middle of its box
+        const at = (face.point ? mm(face.point) : mid(mm(face.box.slice(0, 3)), mm(face.box.slice(3)))).map(tidy);
+        const tries = [...(face.normal ? [{ at, normal: face.normal.map(tidy) }] : []), { at }];
+        if (tries.some(sel => peet.apply({ op: "name_face", face: sel, name: face.name }).ok)) { names.given++; continue; }
+        if (face.surface === "plane" && face.normal && face.area) {
+          faces = faces || peet.ask({ op: "faces" }).faces || [];
+          const area = face.area * 1e6;
+          const same = faces.filter(x => x.surface === "plane" && x.normal && dot(x.normal, face.normal) > 0.9999
+            && Math.abs(dot(sub(x.center, at), face.normal)) < 1e-3 && Math.abs(x.area_mm2 - area) < 1e-3 * area);
+          if (same.length === 1 && peet.apply({ op: "name_face", face: { body: same[0].body, index: same[0].index }, name: face.name }).ok) { names.given++; continue; }
+        }
+        names.missed.push(face.name);
+      }
+      for (const edge of (b.namedEdges || []).filter(x => !skip.has(x.name))) {
+        names.wanted++;
+        let sel = edge.start && edge.end ? { at: mid(mm(edge.start), mm(edge.end)).map(tidy) } : null;
+        // A whole circle has no ends: a point on it
+        if (!sel && edge.curve === "circle" && Array.isArray(edge.circle) && edge.circle.length >= 7) {
+          const centre = mm(edge.circle.slice(0, 3)), n = unit(edge.circle.slice(3, 6)), r = edge.circle[6] * MM;
+          const across = unit(cross(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+          sel = { at: add(centre, mul(across, r)).map(tidy) };
+        }
+        if (sel && peet.apply({ op: "name_edge", edge: sel, name: edge.name }).ok) names.given++; else names.missed.push(edge.name);
+      }
+    }
+  }
+
   /** A plane made; one suppressed in SolidWorks is suppressed too (where it is live nowhere), as FabSys names it. */
   function asleepPlane(f, name, how) {
     if (!f.suppressed) return record(f, "imported", how);
@@ -3101,13 +3319,19 @@ function importPart(doc, dir) {
         if (/^(Front|Top|Right) Plane$/.test(f.name)) return;
         if (/^(front|top|right)$/i.test(f.name.trim())) return record(f, "not supported", `a plane called ${f.name} is PeetCAD's standard plane of that name`);
         const name = f.name.trim();
-        const made = peet.apply({ op: "plane", from: standard, distance: 0, name });
-        if (!made.ok) return record(f, "failed", made.error);
-        const where = probe(name);
-        if (where && samePlane(where, pf)) return asleepPlane(f, name, `on the ${standard} plane`);
-        peet.apply({ op: "delete", feature: name });
+        // Facing the way SolidWorks' does: a mid plane faces the way of its first face, which can be against
+        // the standard plane's normal
+        if (fixedPlane(standard, 0, false, name, pf)) return asleepPlane(f, name, `on the ${standard} plane`);
         return record(f, "failed", "the plane did not come out where SolidWorks has it");
       }
+      const name = f.name.trim();
+      // What SolidWorks made it from, where PeetCAD has a plane of that kind, so that it follows the part
+      const referenced = referencedPlane(f, pf, name);
+      if (referenced) { planes.set(f.name, name); return asleepPlane(f, name, referenced); }
+      // SolidWorks' "PlaneN" are sketch planes, which no mate names: following the part matters more there than
+      // which way it faces (Roof's Plane1, square to the mitre flange's edge at its end)
+      const following = /^Plane\d+$/.test(name) && referencedPlane(f, pf, name, true);
+      if (following) { planes.set(f.name, name); return asleepPlane(f, name, following); }
       // A plane square to an axis is an offset of a standard plane. It is where SolidWorks has it, but it
       // no longer follows what it was defined from.
       const axis = ["x", "y", "z"].find(k => Math.abs(Math.abs(dot(pf.n, AXES[k])) - 1) < 1e-9);
@@ -3115,14 +3339,8 @@ function importPart(doc, dir) {
       const from = { x: "right", y: "front", z: "top" }[axis];
       const distance = Math.abs(dot(pf.o, AXES[axis]));
       // PeetCAD trims the spaces off a name ("Hood Zenith ")
-      const name = f.name.trim();
       for (const flip of [false, true]) {
-        const op = { op: "plane", from, distance: tidy(distance), flip, name };
-        const tried = peet.apply(op);
-        if (!tried.ok) return record(f, "failed", tried.error);
-        const where = probe(name);
-        if (where && samePlane(where, pf)) { planes.set(f.name, name); return asleepPlane(f, name, "as a fixed offset plane"); }
-        peet.apply({ op: "delete", feature: name });
+        if (fixedPlane(from, distance, flip, name, pf)) { planes.set(f.name, name); return asleepPlane(f, name, "as a fixed offset plane"); }
       }
       return record(f, "failed", "the plane did not come out where SolidWorks has it");
     }
@@ -3492,8 +3710,11 @@ function importPart(doc, dir) {
         }
         if (!best || best.failed) return finish(f, best ? best.failed : { ok: false, message: "it can't be built" });
         const s = best.shift === shifts[0] ? sk : moved(best.shift, f.name + " profile");
+        // Tied to the corner of its edge before the flange is made, so that it refers to nothing of the flange's
+        const anchored = anchorProfile(s.name, s !== sk, edges.flatMap(e => [mm(e.start), mm(e.end)]), thickness || 0);
         const built = build(f, { ...op, sketch: s.name });
         if (built.ok) {
+          if (!anchored) report.notes.push(`${f.name}'s profile (${s.name}) is not tied to the corner of its edge: it stays where it is when the part's sizes change.`);
           if (s !== sk) built.names.push(s.name);
           if (best.planes < 1 - 1e-3) built.warning = `${(100 * (1 - best.planes)).toFixed(0)}% of its flat faces by area are in no plane PeetCAD's flange has`;
           const others = cornersWithOthers(f.name, built.names.filter(n => n !== s.name), (sheet ? sheet.BendRadius : 0) * MM);
@@ -4342,20 +4563,7 @@ function importPart(doc, dir) {
   if (bodies.length) {
     // ---- The names SolidWorks' faces and edges have, which FabSys mates and sketches by ----
     const names = { wanted: 0, given: 0, missed: [] };
-    for (const b of sw) {
-      for (const face of b.faces.filter(x => x.name)) {
-        names.wanted++;
-        // A point on the face (the second export has one); failing that the middle of its box
-        const at = (face.point ? mm(face.point) : mid(mm(face.box.slice(0, 3)), mm(face.box.slice(3)))).map(tidy);
-        const tries = [...(face.normal ? [{ at, normal: face.normal.map(tidy) }] : []), { at }];
-        if (tries.some(sel => peet.apply({ op: "name_face", face: sel, name: face.name }).ok)) names.given++; else names.missed.push(face.name);
-      }
-      for (const edge of b.namedEdges || []) {
-        names.wanted++;
-        const sel = edge.start && edge.end ? { at: mid(mm(edge.start), mm(edge.end)).map(tidy) } : null;
-        if (sel && peet.apply({ op: "name_edge", edge: sel, name: edge.name }).ok) names.given++; else names.missed.push(edge.name);
-      }
-    }
+    nameGeometry(sw, names);
     if (names.wanted) report.names = names;
 
     // ---- SolidWorks' names for the sizes of features ----
@@ -4807,6 +5015,13 @@ function importPart(doc, dir) {
         const boxDiff = now.min && theirBox ? Math.max(...[...now.min, ...now.max].map((x, i) => Math.abs(x - theirBox[i]))) : null;
         entry.difference = { volume: off, box_mm: boxDiff };
         entry.verdict = off !== null && off < 1e-5 && boxDiff < 1e-3 ? "matches" : off !== null && off < 0.05 && boxDiff < 1e-3 ? "same size, volume differs" : "differs";
+        // Faces and edges SolidWorks names only in this configuration (on a flange it alone has), or that
+        // could not be named in the active one
+        const missed = new Set((report.names || { missed: [] }).missed);
+        const given = new Set(sw.flatMap(b => [...b.faces.filter(x => x.name).map(x => x.name), ...(b.namedEdges || []).map(x => x.name)]).filter(n => !missed.has(n)));
+        const more = { wanted: 0, given: 0, missed: [] };
+        nameGeometry(other.bodies || [], more, given);
+        if (more.wanted) entry.names = more;
         // A configuration with every feature suppressed has no body in SolidWorks: nor should it here
         if (!step && !(other.bodies || []).length) {
           entry.difference = { volume: now.volume_mm3 ? 1 : 0, box_mm: 0 };

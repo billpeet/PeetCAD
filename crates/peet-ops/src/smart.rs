@@ -14,8 +14,9 @@ use std::sync::Arc;
 use peet_document::Document;
 use peet_model::in_context::{External, Geom, change_at, model_at};
 use peet_model::{
-    CompId, EndCondition, ExtrudeFeature, FeatureId, FeatureKind, MateEnd, MateGeom, Model,
-    Operation, PlaneRef, SheetCutEnd, SheetCutFeature, SketchRef, SmartFeature,
+    AxisRef, CompId, EndCondition, ExtrudeFeature, FeatureId, FeatureKind, LinearDirection,
+    MateEnd, MateGeom, Model, Operation, Output, PatternDef, PatternFeature, PlaneRef, Scalar,
+    ScalarKind, SheetCutEnd, SheetCutFeature, SketchRef, SmartFeature, StdAxis, smart_seeds,
 };
 use peet_sketch::Geometry;
 use serde_json::{Map, Value, json};
@@ -145,6 +146,8 @@ struct Applied {
     smart_feature: String,
     reference: u32,
     entities: usize,
+    /// The patterns of the cut, and how many of it each makes (the original included).
+    patterns: Vec<(String, u32)>,
 }
 
 /// `apply_smart_features`. Returns the undo label.
@@ -213,7 +216,7 @@ pub(crate) fn apply(
     let context = doc.title();
     let label = format!("Apply Smart Features {name}");
     let mut applied = Vec::new();
-    for (_, smart_name, s) in &smart {
+    for (smart_id, smart_name, s) in &smart {
         let sketch_name = smart_part.name_of(s.sketch).to_owned();
         // The smart sketch's curves, converted onto the face where the component puts
         // them.
@@ -304,6 +307,21 @@ pub(crate) fn apply(
         if let Some(f) = part.feature_mut(cut) {
             f.name = made_name.clone();
         }
+        // Its patterns in the smart part, as many as they come to there now
+        let mut patterns = Vec::new();
+        let made = smart_patterns(doc, &own, &target.path, &smart_part, *smart_id)
+            .map_err(|e| format!("Smart feature {smart_name} of {name}: {e}"))?;
+        for (pattern_name, def, copies) in made {
+            let id = part.add(FeatureKind::Pattern(Box::new(PatternFeature {
+                seeds: vec![cut],
+                def,
+            })));
+            let label = free_name(&part, &format!("{made_name} {pattern_name}"));
+            if let Some(f) = part.feature_mut(id) {
+                f.name = label.clone();
+            }
+            patterns.push((label, copies));
+        }
         let (changed, ()) = change_at(model, &target.path, &mut |m| *m = part.clone())
             .ok_or("The part is gone.")?;
         *model = changed;
@@ -315,6 +333,7 @@ pub(crate) fn apply(
             smart_feature: smart_name.clone(),
             reference: reference as u32,
             entities: curves.len(),
+            patterns,
         });
     }
     // A linked part (at any depth) is written, as `in_context` writes one.
@@ -338,6 +357,11 @@ pub(crate) fn apply(
                     "smart_feature": a.smart_feature,
                     "reference": a.reference,
                     "entities": a.entities,
+                    "patterns": a
+                        .patterns
+                        .iter()
+                        .map(|(n, c)| json!({ "feature": n, "count": c }))
+                        .collect::<Vec<_>>(),
                 }))
                 .collect::<Vec<_>>()
         ),
@@ -354,6 +378,128 @@ pub(crate) fn apply(
         );
     }
     Ok(label)
+}
+
+/// The linear patterns of smart feature `seed` in its part (those that copy smart features
+/// only), as they are made in the part it is applied in: SolidWorks works out a library
+/// feature's equations against the smart part as it is when it is applied (FabSys sizes the
+/// part first), so each count and spacing is its value in the smart part now, and each
+/// direction the one it comes to in the other part (`target`), which must be along one of
+/// that part's axes. A direction of one (the seed alone, as an equation can make it) copies
+/// nothing. Each with its name in the smart part and how many it makes.
+fn smart_patterns(
+    doc: &Document,
+    own: &[CompId],
+    target: &[CompId],
+    smart_part: &Model,
+    seed: FeatureId,
+) -> Result<Vec<(String, PatternDef, u32)>, String> {
+    let patterns: Vec<_> = smart_part
+        .features()
+        .filter(|f| !f.suppressed)
+        .filter_map(|f| match &f.kind {
+            FeatureKind::Pattern(p)
+                if p.seeds.contains(&seed) && smart_seeds(smart_part, &p.seeds) =>
+            {
+                Some((f.name.clone(), p.def.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    if patterns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut sized = smart_part.clone();
+    sized.refresh_dimension_values();
+    let params = &sized.parameters;
+    let eval = doc.evaluation();
+    let (Some(there), Some(here)) = (eval.component_frame(target), eval.component_frame(own))
+    else {
+        return Err("a component it involves is suppressed or not placed.".to_owned());
+    };
+    let turn = there.inverse().compose(&here).rotation;
+    let built = Document::from_model(smart_part.clone(), None);
+    let mut out = Vec::new();
+    for (pattern_name, def) in patterns {
+        let PatternDef::Linear { first, second } = def else {
+            return Err(format!(
+                "its pattern {pattern_name} is circular: only linear patterns of smart features are made where it is applied."
+            ));
+        };
+        let direction = |d: &LinearDirection| -> Result<(LinearDirection, u32), String> {
+            if d.up_to.is_some() {
+                return Err(format!(
+                    "its pattern {pattern_name} runs up to a reference: give it a count and a spacing."
+                ));
+            }
+            let along = match &d.direction {
+                AxisRef::Standard(a) => a.axis().dir,
+                AxisRef::Feature(id) => match built.evaluation().output(*id) {
+                    Output::Axis(a) => a.dir,
+                    Output::Frame(f) => f.z_axis(),
+                    _ => {
+                        return Err(format!(
+                            "its pattern {pattern_name}'s direction is not built."
+                        ));
+                    }
+                },
+                AxisRef::Edge(_) => {
+                    return Err(format!(
+                        "its pattern {pattern_name} runs along an edge: give it a standard axis or a reference axis."
+                    ));
+                }
+            };
+            let along = turn * if d.flip { -along } else { along };
+            let Some((axis, flip)) = StdAxis::ALL.iter().find_map(|a| {
+                let k = a.axis().dir.dot(along);
+                (k.abs() > 1.0 - 1e-6).then_some((*a, k < 0.0))
+            }) else {
+                return Err(format!(
+                    "its pattern {pattern_name} runs at an angle to the axes of the part it is applied in."
+                ));
+            };
+            let mut count = d
+                .count
+                .evaluate(ScalarKind::Number, params)
+                .map_err(|m| format!("its pattern {pattern_name}'s count: {m}."))?;
+            if d.count.expression.is_some() {
+                count = count.round();
+            }
+            let spacing = d
+                .spacing
+                .evaluate(ScalarKind::Length, params)
+                .map_err(|m| format!("its pattern {pattern_name}'s spacing: {m}."))?;
+            let count = count.clamp(1.0, 10_000.0) as u32;
+            Ok((
+                LinearDirection {
+                    direction: AxisRef::Standard(axis),
+                    spacing: Scalar::new(spacing),
+                    count: Scalar::new(f64::from(count)),
+                    flip,
+                    up_to: None,
+                },
+                count,
+            ))
+        };
+        let mut rows: Vec<_> = std::iter::once(&first)
+            .chain(second.as_ref())
+            .map(direction)
+            .collect::<Result<_, _>>()?;
+        rows.retain(|(_, n)| *n > 1);
+        let copies = rows.iter().map(|(_, n)| n).product();
+        let mut rows = rows.into_iter().map(|(d, _)| d);
+        if let Some(first) = rows.next() {
+            out.push((
+                pattern_name,
+                PatternDef::Linear {
+                    first,
+                    second: rows.next(),
+                },
+                copies,
+            ));
+        }
+    }
+    Ok(out)
 }
 
 /// Which of the faces a smart feature goes on: the face, parallel to its sketch, that the
