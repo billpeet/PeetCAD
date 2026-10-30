@@ -247,6 +247,13 @@ the arm is turned to 60° and then mated to turn to 90°, along Y.
 - **Mate into it** with a component path (`["Hinge", "Arm"]`), as for any part inside a
   sub-assembly. Then a mate that a rigid sub-assembly would fail ("can't hold") can
   turn the arm instead.
+- **A leaf facing the wrong way swings round its pin.** A mate to an arm that faces the
+  other way to the one the mate asks for fails ("can't be anti-aligned") while the
+  sub-assembly is rigid, and stays in the list as failed, as SolidWorks keeps it. Make
+  the sub-assembly flexible and the arm is swung round its pin to suit the mate (where
+  its own mates leave it free to), rather than the whole sub-assembly turned over, which
+  would undo the mates before. A door whose hinge leaves were saved facing different
+  ways comes right once it is flexible.
 - **Each instance is posed on its own**: two instances of one hinge can be open to
   different angles. The sub-assembly's file is not changed.
 - **`place`** takes a path to a component that moves in a flexible sub-assembly:

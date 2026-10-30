@@ -627,6 +627,113 @@ fn a_mate_that_cant_be_the_way_round_it_asks_fails() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A door with two hinges whose leaves face opposite ways (Door Assembly's "R Hinge": its
+/// third hinge's leaf, which no mate of the door's holds, was left turned round). Mated
+/// face to face with a plane, the second leaf fails while the door is rigid, as in
+/// SolidWorks; made flexible, the door's leaf is swung round its pin to suit the mate (as
+/// SolidWorks does), not the door turned over, which would undo the first.
+#[test]
+fn a_flexible_sub_assemblys_free_leaf_swings_round_to_suit_a_mate() {
+    let dir = temp("leaf");
+    let path = |n: &str| dir.join(n).to_string_lossy().into_owned();
+    let mut doc = Document::default();
+    // The pin and the leaf, turning on it.
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "circle", "center": [0, 0], "radius": 5}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "extrude", "sketch": "Sketch1", "depth": 25}),
+    );
+    ok(&mut doc, json!({"op": "save", "path": path("Pin.peet")}));
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [-10, -10], "to": [70, 10]}, {"type": "circle", "center": [0, 0], "radius": 5}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "extrude", "sketch": "Sketch1", "depth": 6}),
+    );
+    ok(&mut doc, json!({"op": "save", "path": path("Leaf.peet")}));
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": path("Pin.peet"), "name": "Pin"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": path("Leaf.peet"), "name": "Leaf"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "mate", "type": "concentric", "a": {"component": "Pin", "face": {"at": [5, 0, 10]}}, "b": {"component": "Leaf", "face": {"at": [5, 0, 3]}}}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "mate", "type": "coincident", "flip": true, "a": {"component": "Pin", "face": {"normal": [0, 0, -1]}}, "b": {"component": "Leaf", "face": {"normal": [0, 0, -1]}}}),
+    );
+    ok(&mut doc, json!({"op": "save", "path": path("Hinge.peet")}));
+    // The door: a slab and two hinges, the second's leaf turned round.
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [-20, -20], "to": [100, 220]}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "extrude", "sketch": "Sketch1", "depth": 5}),
+    );
+    ok(&mut doc, json!({"op": "save", "path": path("Slab.peet")}));
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": path("Slab.peet"), "name": "Slab"}),
+    );
+    for (name, y) in [("H1", 0), ("H2", 200)] {
+        ok(
+            &mut doc,
+            json!({"op": "insert", "path": path("Hinge.peet"), "name": name, "at": [0, y, 5], "fixed": true}),
+        );
+        ok(&mut doc, json!({"op": "flexible", "component": name}));
+    }
+    ok(
+        &mut doc,
+        json!({"op": "place", "component": ["H2", "Leaf"], "rotate": {"axis": "z", "angle": 180}}),
+    );
+    ok(&mut doc, json!({"op": "save", "path": path("Door.peet")}));
+
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": path("Door.peet"), "name": "Door", "at": [300, 50, 0]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "fix", "component": "Door", "on": false}),
+    );
+    // Each leaf's end, face to face with the right plane.
+    let leaf_end = |hinge: &str| {
+        json!({"op": "mate", "type": "coincident", "align": "anti_aligned",
+               "a": {"component": ["Door", hinge, "Leaf"], "face": {"at": [70, 0, 3]}},
+               "b": {"plane": "right"}})
+    };
+    let r = ok(&mut doc, leaf_end("H1"));
+    assert_eq!(r["mate"]["status"], "ok", "{r}");
+    let r = ok(&mut doc, leaf_end("H2"));
+    assert_eq!(r["mate"]["status"], "failed", "{r}");
+    ok(&mut doc, json!({"op": "flexible", "component": "Door"}));
+    let mates = ok(&mut doc, json!({"op": "mates"}));
+    for m in mates["mates"].as_array().unwrap() {
+        assert_eq!(m["status"], "ok", "{mates}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// FabSys's `SetDimension("Notch@Sketch42@…", -203)`: SolidWorks takes a negative value
 /// for a distance by reversing it, the geometry going to the other side.
 #[test]

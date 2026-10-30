@@ -3320,8 +3320,21 @@ pub(crate) fn solve(
                         .collect();
                 order.sort_by_key(|(i, ..)| mated[*i]);
                 let mut turned = order.is_empty();
-                for (i, p, w, to) in order {
-                    let c = moving(i);
+                // What moves with each end first; failing that, the end's component alone,
+                // where the mates that join it to the rest leave it free to turn (a hinge's
+                // leaf about its pin, in a flexible sub-assembly: SolidWorks swings it round
+                // to suit a mate to it, where turning the whole door over would undo others).
+                let tries: Vec<(usize, DVec3, DVec3, DVec3, Vec<usize>)> = order
+                    .iter()
+                    .map(|&(i, p, w, to)| (i, p, w, to, moving(i)))
+                    .chain(
+                        order
+                            .iter()
+                            .filter(|&&(i, ..)| moving(i) != vec![i])
+                            .map(|&(i, p, w, to)| (i, p, w, to, vec![i])),
+                    )
+                    .collect();
+                for (i, p, w, to, c) in tries {
                     // The directions the mates between it and the rest hold it by.
                     let held: Vec<DVec3> = held_by
                         .iter()
