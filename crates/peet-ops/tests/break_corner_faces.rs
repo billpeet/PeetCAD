@@ -113,3 +113,28 @@ fn a_face_picked_whole_is_the_piece_it_was_picked_at() {
         );
     }
 }
+
+/// A chamfer on a face's corners takes its outside corners only, as SolidWorks chamfers
+/// them: a notch's inside corners are left square, so a notch shallower than two chamfers
+/// is no matter (Gear tray's Break-Corner1, with the back wall notch cut in its flange).
+#[test]
+fn a_chamfer_on_a_face_leaves_its_inside_corners() {
+    let mut doc = Document::default();
+    for op in [
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [120, 80]}]}),
+        json!({"op": "base_flange", "sketch": "Sketch1", "thickness": 2}),
+        json!({"op": "sketch", "on": {"at": [60, 40, 2], "normal": [0, 0, 1]}, "name": "Notch", "draw": [{"type": "rectangle", "from": [50, 74], "to": [70, 90]}]}),
+        json!({"op": "sheet_cut", "sketch": "Notch", "name": "Notch cut"}),
+        json!({"op": "break_corner", "name": "All round", "kind": "chamfer", "size": 4, "edges": [], "faces": [{"at": [10, 10, 2], "normal": [0, 0, 1]}]}),
+    ] {
+        ok(&mut doc, op);
+    }
+    // Four outside corners of the plate and two of the notch's mouth, each a 4 mm
+    // triangle 2 mm thick; the notch is 6 deep, shorter than two chamfers
+    let notched = 120.0 * 80.0 * 2.0 - 20.0 * 6.0 * 2.0 - 6.0 * 8.0 * 2.0;
+    assert!(
+        (volume(&mut doc) - notched).abs() < 1e-3,
+        "{}",
+        volume(&mut doc)
+    );
+}

@@ -1139,7 +1139,14 @@ function importPart(doc, dir) {
       // A point that is not the sketch's own, tied to one of its own where it lies, in a relation to the model,
       // is the hidden copy of what the relation is defined by (on it, as the relation has it). So is one a point
       // pierces, which is on another sketch or the model, not this one.
-      const hiddenPoint = e => e && e.kind === "sketchPoint" && ((r.defined || []).length || r.type === "atpierce") && e.x !== undefined && !byId.has(e.id.join("."))
+      // So is one tied to one of its own by a coincidence the export gives nothing it is defined by: the end of an
+      // edge the sketch converted (Plinth PFC Short's mitre, whose corners are on the ends of the face's edges, and
+      // follow them when the channel is made longer). It is looked for among the model's vertices, and failing
+      // that is the sketch's own point there.
+      const undefinedCopy = !(r.defined || []).length && r.type === "coincident";
+      // (The origin, which SolidWorks doesn't list either, is the origin)
+      const atOriginPoint = e => Math.abs(e.x) < 1e-12 && Math.abs(e.y) < 1e-12;
+      const hiddenPoint = e => e && e.kind === "sketchPoint" && ((r.defined || []).length || r.type === "atpierce" || (undefinedCopy && !atOriginPoint(e))) && e.x !== undefined && !byId.has(e.id.join("."))
         && (r.entities || []).some(o => o && o !== e && o.kind === "sketchPoint" && o.x !== undefined && byId.has(o.id.join(".")) && spot(o) === spot(e));
       const ents = slotted(r), bySlots = (!!r.entities && ents !== r.entities) || ents.some(e => e && e.kind === "sketchSlot");
       for (const e0 of ents) {
@@ -1186,7 +1193,7 @@ function importPart(doc, dir) {
       }
       // The hidden copies stand for what the relation is defined by where the export has nothing for it, or
       // where what it has could not be projected
-      if (copies.length && (!r.defined || (lost && copies.length === r.defined.length))) {
+      if (copies.length && (!r.defined || (undefinedCopy && !r.defined.length) || (lost && copies.length === r.defined.length))) {
         // An in-context relation's (format 7): fixed where SolidWorks has it, to follow the other component in
         // the assembly. Where the assemblies list the relation, before anything of the part's own is tried;
         // where only the feature is known to be in-context, failing the part's own.
@@ -1198,6 +1205,9 @@ function importPart(doc, dir) {
           outside = found; lost = false;
           // A vertex's copy is where the sketch sees it, as the sketch's own points are
           copies.forEach((e, i) => { if (found[i].point && e.x !== undefined) seen.push({ id: found[i].id, e }); });
+        } else if (undefinedCopy) {
+          // Nothing of the model there: the sketch's own point where it lies, as before
+          for (const e of copies) { const id = pointOf(e); if (id !== undefined) pts.push({ id, e }); }
         }
       }
       // An offset's hidden copy is the offset curve itself, which nothing in the model is: its source is found
@@ -3190,6 +3200,20 @@ function importPart(doc, dir) {
       const [a, b] = refs.map(face);
       const how = "halfway between the two faces it was made from";
       tries.push([{ a, b }, how], [{ a: b, b: a }, how]);
+      // Where PeetCAD's faces are not quite SolidWorks' (Mullion V's ends, a millimetre from where SolidWorks has
+      // them, so that Plane2 halfway up it would otherwise be fixed and its mirrored cut stay put when the mullion
+      // is made taller): the nearest face of the part facing each way, a few millimetres off at most, as long as
+      // the plane halfway between them is SolidWorks'
+      const near = r => {
+        const all = peet.ask({ op: "faces" }).faces || [];
+        return all.filter(x => x.surface === "plane" && x.normal && dot(x.normal, r.normal) > 0.9999)
+          .map(x => ({ x, off: Math.abs(dot(sub(x.center, r.at), r.normal)), across: len(sub(sub(x.center, r.at), mul(r.normal, dot(sub(x.center, r.at), r.normal)))) }))
+          .filter(c => c.off < 3 && c.across < 25)
+          .sort((p, q) => p.off - q.off || p.across - q.across).slice(0, 3)
+          .map(c => ({ at: c.x.center.map(tidy), normal: c.x.normal.map(tidy) }));
+      };
+      const nearHow = how + " (PeetCAD's faces nearest SolidWorks')";
+      for (const na of [a, ...near(a)]) for (const nb of [b, ...near(b)]) if (na !== a || nb !== b) tries.push([{ a: na, b: nb }, nearHow]);
     } else if (refs.length === 1 && (refs[0].how === 4 || refs[0].how === 8) && (face(refs[0]) || planeRef(refs[0]))) {
       const from = face(refs[0]) || planeRef(refs[0]);
       const distance = refs[0].how === 8 ? tidy(refs[0].by * MM) : 0;

@@ -142,7 +142,7 @@ impl PeetApp {
     ) {
         let target = match how {
             Use::Convert => MadeIn::Sketch(FeatureSel::Id(feature)),
-            Use::Plane => MadeIn::Plane(FeatureSel::Id(feature)),
+            Use::Plane => MadeIn::Plane(FeatureSel::Id(feature), 0),
         };
         let reply = self.perform(Op::InContext(InContextOp::Make {
             component: vec![CompSel::Id(own)],
@@ -552,7 +552,7 @@ impl PeetApp {
         if let Some(end) = follow {
             let reply = self.perform(Op::InContext(InContextOp::Make {
                 component: vec![CompSel::Id(own)],
-                target: MadeIn::Plane(FeatureSel::Id(id)),
+                target: MadeIn::Plane(FeatureSel::Id(id), 0),
                 from: Box::new(MateEndSel::Ref(end)),
                 entity: None,
                 construction: true,

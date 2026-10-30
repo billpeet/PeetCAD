@@ -279,8 +279,11 @@ X and y along its Z, so `[80, 12]` to `[100, 20]` is x 80 to 100, z 12 to 20.
   own (`{"deduction": 3.5}`, or `k_factor` or `allowance`): for the one bend the press
   brake makes differently, such as a bend at another angle. The folded part is the
   same; the blank is that much longer or shorter. `null` goes back to the body's. "The
-  bend allowance works out at ... it must be greater than zero" on one flange means
-  the body's deduction is too big for that flange's angle or radius: give it its own.
+  bend allowance of a 45° bend works out at ... it must be greater than zero to unfold
+  it" (a warning) means the body's deduction is too big for that flange's angle or
+  radius: the part is folded all the same, as SolidWorks folds it, but it has no flat
+  pattern (a DXF export is refused, and a flat size is not to be trusted) until you
+  give that flange its own.
 
   ```jsonl
   {"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [200, 150]}]}
@@ -290,8 +293,9 @@ X and y along its Z, so `[80, 12]` to `[100, 20]` is x 80 to 100, z 12 to 20.
   ```
 - The bends of a base flange from an open profile take `bends`: a bend model or `null`
   for each, in order along the profile, as SolidWorks' sketched bends can have their
-  own. Give a shallow bend a smaller deduction when "Corner N: The bend allowance works
-  out at ..." says the body's is too big for it.
+  own. Give a shallow bend a smaller deduction when the warning "The bend allowance of a
+  … bend works out at ..." says the body's is too big for it (the part is folded, but
+  has no flat pattern until you do).
 
   ```jsonl
   {"op": "sketch", "on": "front", "draw": [{"type": "polyline", "points": [[0, 0], [100, 0], [200, 20], [200, 40]]}]}
@@ -478,7 +482,9 @@ edge:
   corners are found again at each rebuild, so a notch cut later, or one that another
   configuration moves, gets its corners broken where it is. Edges through the sheet at
   the face's corners that are not between two sides (where a bend starts) are left. It
-  fails only if the faces have no corner at all.
+  fails only if the faces have no corner at all. A round does a notch's inside corners
+  too (filling them in); a chamfer (`kind` `chamfer`) does only the outside ones, as
+  SolidWorks does, so a notch shallower than two chamfers is no matter.
 
 ```jsonl
 {"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [120, 80]}]}

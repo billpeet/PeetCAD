@@ -178,6 +178,9 @@ Use a plane when the mate locates a part by its datum rather than a solid face.
 `plane` takes the same selector as a sketch's `on`. Create named reference planes in
 the part before inserting it. A plane mate follows edits to that plane and keeps its
 reference when the plane is renamed. Standard planes work even in a part with no bodies.
+A reference plane suppressed in its part is still mated to, where it would be (as
+SolidWorks mates to Esc Surround R Bottom's suppressed Plane1), as long as what it is
+made from is built; nothing in the part is built on it.
 
 To reach a part inside a sub-assembly, give `component` a nonempty array from the
 assembly's own component down to the part. Each entry is a name or id in that level's
@@ -746,6 +749,28 @@ moves on; unlocked, it catches up (140); broken, it stays 140 whatever the plate
 - **The assembly's own planes and origin** can be followed too: `from` with no
   `component`, `{"plane": "front"}` or `{"origin": true}` (SolidWorks relates a part's
   sketch to the assembly's Front Plane the same way).
+- **A reference plane of the assembly itself** follows a component's face when
+  `in_context` has no `component` and `feature` is the assembly's plane (SolidWorks' plane
+  inserted in an assembly on a component's face: FabSys mates a plinth by the plane on its
+  back channel). Make the plane first, offset 0 from a standard plane and facing the way
+  it should (it keeps that facing), then put it on the face. A mid plane follows two
+  faces: `plane` 0 and then `plane` 1. The reply's `follows` says where the face is. Mates
+  to the plane move with the component, and a sub-assembly's such plane is where its
+  components are wherever the sub-assembly is used.
+
+  ```jsonl
+  {"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [100, 60]}]}
+  {"op": "extrude", "sketch": "Sketch1", "depth": 6}
+  {"op": "new", "assembly": true, "keep": true}
+  {"op": "insert", "part": 1, "name": "Front", "fixed": true}
+  {"op": "insert", "part": 1, "name": "Back", "at": [0, 200, 0], "fixed": true}
+  {"op": "plane", "from": "front", "distance": 0, "name": "BackPlane"}
+  {"op": "in_context", "feature": "BackPlane", "from": {"component": "Back", "face": {"normal": [0, 1, 0]}}}
+  {"op": "plane", "a": "front", "b": "front", "name": "Between"}
+  {"op": "in_context", "feature": "Between", "plane": 0, "from": {"component": "Front", "face": {"normal": [0, 1, 0]}}}
+  {"op": "in_context", "feature": "Between", "plane": 1, "from": {"component": "Back", "face": {"normal": [0, -1, 0]}}}
+  {"op": "features"}
+  ```
 - **A part inside a sub-assembly** follows too. Made in the sub-assembly (its file is the
   context), it follows whenever the sub-assembly rebuilds, also inside a bigger assembly,
   which rebuilds its sub-assemblies first: `external_references` there lists it with the
@@ -804,9 +829,9 @@ they move with it.
 - **In the part: `smart_feature`.** `sketch` is a sketch of the part, drawn where the other
   part's face will be (usually on the face or plane the part sits on): its lines, arcs and
   circles are the profile. When the component cuts several parts (a plinth bolt
-  through a floor and a plinth), each smart feature goes on the face it lies against (of
-  those given, the one parallel to its sketch and nearest it); `reference` (default 0) is
-  its place in SolidWorks' order of references, used where none lies against it. `end`: `sheet` (default: through the sheet or the
+  through a floor and a plinth), `reference` (default 0) is its place in the order of
+  the faces `apply_smart_features` is given: it goes on that face, wherever its sketch
+  is, as SolidWorks takes its library features' references in order. `end`: `sheet` (default: through the sheet or the
   material the face is on), `blind` with `depth`, `through_all`; `reverse` cuts away from
   the part. It changes nothing in the part itself. Several smart features may share a face.
 - **Patterned: `linear_pattern` of smart features (no other features with them).**
@@ -825,6 +850,11 @@ they move with it.
   through the material (`up to next`). They are named as SolidWorks names them,
   `Smart-Feature1<HingeMale-1>`, numbered on in each part. The reply's `applied` lists
   them, and `written` any linked file changed.
+- **Left out, not failed:** a smart feature whose cut would take nothing off its part
+  (its sketch is off the face it was given: the faces given in the wrong order, or the
+  component not where it should be) is not made, as SolidWorks leaves it out. The reply's
+  `left_out` lists each, with the part and why. Check it: an empty `applied` usually
+  means the faces are in the wrong order or the component is misplaced.
 - **Fails when** the component's part has no smart features ("not a smart component":
   add them with `smart_feature`, or use the right component), fewer faces are given than
   its features use (the error lists which feature goes on which face), a face is the

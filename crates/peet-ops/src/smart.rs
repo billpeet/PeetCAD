@@ -216,6 +216,7 @@ pub(crate) fn apply(
     let context = doc.title();
     let label = format!("Apply Smart Features {name}");
     let mut applied = Vec::new();
+    let mut left_out = Vec::new();
     for (smart_id, smart_name, s) in &smart {
         let sketch_name = smart_part.name_of(s.sketch).to_owned();
         // The smart sketch's curves, converted onto the face where the component puts
@@ -239,7 +240,10 @@ pub(crate) fn apply(
                 smart_part.name
             ));
         }
-        let reference = choose(doc, &own, s, &curves, &targets)?;
+        // The face given in its place among the references: SolidWorks takes them in its
+        // library features' order (job 21441-1: a Plinth bolt's first feature, made where the
+        // plinth was, went into the Floor, its first face)
+        let reference = s.reference as usize;
         let target = &targets[reference];
         let Some(MateGeom::Face(face)) = &target.geom else {
             continue;
@@ -322,6 +326,18 @@ pub(crate) fn apply(
             }
             patterns.push((label, copies));
         }
+        // A feature whose cut takes nothing off the part (its sketch is off the face given)
+        // is left out, as SolidWorks leaves it out: Esc Surround Mid's on Esc Surround L and
+        // R in job 21441-1, each drawn over the other
+        if let Some(why) = cuts_nothing(&part, cut) {
+            left_out.push(json!({
+                "smart_feature": smart_name,
+                "part": target_names.join(" / "),
+                "reference": reference,
+                "why": why,
+            }));
+            continue;
+        }
         let (changed, ()) = change_at(model, &target.path, &mut |m| *m = part.clone())
             .ok_or("The part is gone.")?;
         *model = changed;
@@ -366,6 +382,9 @@ pub(crate) fn apply(
                 .collect::<Vec<_>>()
         ),
     );
+    if !left_out.is_empty() {
+        data.insert("left_out".to_owned(), json!(left_out));
+    }
     if !written.is_empty() {
         data.insert(
             "written".to_owned(),
@@ -502,73 +521,13 @@ fn smart_patterns(
     Ok(out)
 }
 
-/// Which of the faces a smart feature goes on: the face, parallel to its sketch, that the
-/// component puts it on (nearest the sketch's plane, then nearest the sketch in the
-/// face), as SolidWorks matched it in the assembly the smart component was made in.
-/// None parallel to it: its `reference`, the order SolidWorks would take them in.
-fn choose(
-    doc: &Document,
-    own: &[CompId],
-    s: &SmartFeature,
-    curves: &[peet_sketch::EntityId],
-    targets: &[MateEnd],
-) -> Result<usize, String> {
-    let Some(first) = curves.first() else {
-        return Ok(s.reference as usize);
-    };
-    let from = MateEnd {
-        path: own.to_vec(),
-        geom: Some(MateGeom::Sketch(SketchRef {
-            feature: s.sketch,
-            entity: *first,
-        })),
-    };
-    let mut best: Option<(f64, f64, usize)> = None;
-    for (i, t) in targets.iter().enumerate() {
-        let (Ok(Geom::Plane(plane)), Ok(at)) =
-            (geometry(doc, &t.path, t), geometry(doc, &t.path, &from))
-        else {
-            continue;
-        };
-        let (p, axis) = match at {
-            Geom::Circle { center, normal, .. } | Geom::Arc { center, normal, .. } => {
-                (center, Some(normal))
-            }
-            Geom::Line(a, b) => (a.lerp(b, 0.5), None),
-            Geom::Point(p) => (p, None),
-            Geom::Plane(_) => continue,
-        };
-        let n = plane.frame.z_axis();
-        if axis.is_some_and(|a| a.cross(n).length() > 1e-6) {
-            continue;
-        }
-        let off = (p - plane.origin()).dot(n).abs();
-        let centre = face_centre(doc, &t.path, t).unwrap_or(plane.origin());
-        let across = ((p - centre) - n * (p - centre).dot(n)).length();
-        // To a hundredth of a millimetre: faces in one plane are told apart by where they are
-        let off = (off * 100.0).round();
-        let better = match best {
-            None => true,
-            Some((o, a, _)) => off < o || (off == o && across < a - 1e-6),
-        };
-        if better {
-            best = Some((off, across, i));
-        }
-    }
-    // None parallel to it: as SolidWorks, by order
-    Ok(best.map_or(s.reference as usize, |(_, _, i)| i))
-}
-
-/// The middle of a face given as a mate end, in its part's coordinates.
-fn face_centre(doc: &Document, path: &[CompId], end: &MateEnd) -> Option<peet_math::DVec3> {
-    let Some(MateGeom::Face(face)) = &end.geom else {
-        return None;
-    };
-    let part = model_at(&doc.model, path)?;
-    let built = Document::from_model((*part).clone(), None);
-    let bodies = &built.evaluation().bodies;
-    let found = peet_model::naming::find_face(bodies, face)?;
-    Some(bodies[found.body].face_center(found.id))
+/// Why the cut `cut` of `part` takes nothing off it, if it doesn't: the part built as it is
+/// (its in-context sketch where the assembly puts it now).
+fn cuts_nothing(part: &Model, cut: FeatureId) -> Option<String> {
+    let built = Document::from_model(part.clone(), None);
+    let message = built.evaluation().status(cut)?.message()?.to_owned();
+    (message.contains("doesn't remove any material") || message.contains("nothing in its way"))
+        .then_some(message)
 }
 
 /// Writes the file of the deepest linked part or sub-assembly along `path` (the one

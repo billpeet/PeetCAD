@@ -726,6 +726,12 @@ impl Layout {
             .filter_map(|(i, p)| p.bend().map(|b| (i, b)))
     }
 
+    /// Why the sheet can't be unfolded, if a bend's allowance is too small to unfold
+    /// (see [`crate::BendValues::unfoldable`]).
+    pub fn unfold_error(&self) -> Option<String> {
+        self.bends().find_map(|(_, b)| b.values.unfold_error())
+    }
+
     /// The bend model, for reports.
     pub fn model(&self) -> BendModel {
         self.settings.model
