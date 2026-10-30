@@ -212,9 +212,12 @@ fn what_is_not_a_smart_component_or_given_too_few_faces_is_refused() {
 }
 
 #[test]
-fn each_smart_feature_goes_on_the_face_it_is_placed_against() {
-    // A bolt through a floor and a plinth (SolidWorks' Plinth bolt): a 6 mm hole in the
-    // floor under it and an 8 mm one in the plinth above, whichever order the faces come in.
+fn each_smart_feature_goes_on_the_face_given_in_its_place() {
+    // Each smart feature goes on the face given in its place among the references, as
+    // SolidWorks takes them, wherever its sketch is (job 21441-1: a Plinth bolt's first
+    // feature, drawn where the plinth was, went into the Floor, given first). One whose cut
+    // would take nothing off its part is left out, as SolidWorks leaves it out (Esc Surround
+    // Mid's, each drawn over the other surround).
     let dir = temp("two");
     let plate = dir.join("Plate.peet").to_string_lossy().into_owned();
     let bolt = dir.join("Bolt.peet").to_string_lossy().into_owned();
@@ -228,6 +231,9 @@ fn each_smart_feature_goes_on_the_face_it_is_placed_against() {
         json!({"op": "extrude", "sketch": "Sketch1", "depth": 2}),
     );
     ok(&mut doc, json!({"op": "save", "path": plate}));
+    // Each plate a part of its own
+    let other = dir.join("Other.peet").to_string_lossy().into_owned();
+    ok(&mut doc, json!({"op": "save", "path": other}));
     let mut doc = Document::default();
     ok(
         &mut doc,
@@ -239,60 +245,73 @@ fn each_smart_feature_goes_on_the_face_it_is_placed_against() {
     );
     ok(
         &mut doc,
-        json!({"op": "sketch", "on": "top", "name": "Floor hole", "draw": [{"type": "circle", "center": [0, 0], "radius": 3}]}),
+        json!({"op": "sketch", "on": "top", "name": "Near hole", "draw": [{"type": "circle", "center": [0, 0], "radius": 3}]}),
     );
     ok(
         &mut doc,
-        json!({"op": "plane", "from": "top", "distance": 10, "name": "Up"}),
+        json!({"op": "sketch", "on": "top", "name": "Far hole", "draw": [{"type": "circle", "center": [400, 0], "radius": 3}]}),
     );
     ok(
         &mut doc,
-        json!({"op": "sketch", "on": "Up", "name": "Plinth hole", "draw": [{"type": "circle", "center": [0, 0], "radius": 4}]}),
+        json!({"op": "smart_feature", "sketch": "Near hole", "reference": 0}),
     );
     ok(
         &mut doc,
-        json!({"op": "smart_feature", "sketch": "Plinth hole", "reference": 0}),
-    );
-    ok(
-        &mut doc,
-        json!({"op": "smart_feature", "sketch": "Floor hole", "reference": 1}),
+        json!({"op": "smart_feature", "sketch": "Far hole", "reference": 1}),
     );
     ok(&mut doc, json!({"op": "save", "path": bolt}));
-    let mut doc = Document::default();
-    ok(&mut doc, json!({"op": "new", "assembly": true}));
-    ok(
-        &mut doc,
-        json!({"op": "insert", "path": plate, "name": "Floor-1", "fixed": true, "at": [0, 0, -2]}),
-    );
-    ok(
-        &mut doc,
-        json!({"op": "insert", "path": plate, "name": "Plinth-1", "fixed": true, "at": [0, 0, 10]}),
-    );
-    ok(
-        &mut doc,
-        json!({"op": "insert", "path": bolt, "name": "Bolt-1", "fixed": true, "at": [50, 50, 0]}),
-    );
-    let applied = ok(
-        &mut doc,
-        json!({"op": "apply_smart_features", "component": "Bolt-1", "references": [
-            {"component": "Floor-1", "face": {"normal": [0, 0, 1]}},
-            {"component": "Plinth-1", "face": {"normal": [0, 0, -1]}}]}),
-    );
-    let made: Vec<(String, u64)> = applied["applied"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|a| {
-            (
-                a["part"].as_str().unwrap().to_owned(),
-                a["reference"].as_u64().unwrap(),
-            )
-        })
-        .collect();
+    // Two plates side by side, under the near hole and the far one
+    let apply = |first: &str, second: &str| {
+        let mut doc = Document::default();
+        ok(&mut doc, json!({"op": "new", "assembly": true}));
+        ok(
+            &mut doc,
+            json!({"op": "insert", "path": plate, "name": "Near-1", "fixed": true, "at": [0, 0, -2]}),
+        );
+        ok(
+            &mut doc,
+            json!({"op": "insert", "path": other, "name": "Far-1", "fixed": true, "at": [400, 0, -2]}),
+        );
+        ok(
+            &mut doc,
+            json!({"op": "insert", "path": bolt, "name": "Bolt-1", "fixed": true, "at": [50, 50, 0]}),
+        );
+        ok(
+            &mut doc,
+            json!({"op": "apply_smart_features", "component": "Bolt-1", "references": [
+                {"component": first, "face": {"normal": [0, 0, 1]}},
+                {"component": second, "face": {"normal": [0, 0, 1]}}]}),
+        )
+    };
+    let parts = |reply: &Value, key: &str| -> Vec<(String, u64)> {
+        reply[key]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .map(|a| {
+                        (
+                            a["part"].as_str().unwrap().to_owned(),
+                            a["reference"].as_u64().unwrap(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let applied = apply("Near-1", "Far-1");
     assert_eq!(
-        made,
-        [("Plinth-1".to_owned(), 1), ("Floor-1".to_owned(), 0)],
+        parts(&applied, "applied"),
+        [("Near-1".to_owned(), 0), ("Far-1".to_owned(), 1)],
         "{applied}"
+    );
+    assert!(applied.get("left_out").is_none(), "{applied}");
+    // Given the other way round, each goes on the other plate, where it cuts nothing
+    let swapped = apply("Far-1", "Near-1");
+    assert!(parts(&swapped, "applied").is_empty(), "{swapped}");
+    assert_eq!(
+        parts(&swapped, "left_out"),
+        [("Far-1".to_owned(), 0), ("Near-1".to_owned(), 1)],
+        "{swapped}"
     );
 }
 

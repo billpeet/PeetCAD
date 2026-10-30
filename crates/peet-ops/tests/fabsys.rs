@@ -915,3 +915,110 @@ fn names_are_found_in_any_case_where_only_one_is_alike() {
     assert!(e.contains("WIV MID PLANE"), "{e}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A bend deduction too big for a shallow bend (FabSys sets 3.325 mm on a part whose 45°
+/// flange then works out at a negative allowance: MS3 Forklift Tine lifting plate) folds the
+/// part all the same, as SolidWorks does, with a warning, and its flat pattern is refused,
+/// as SolidWorks' flat pattern fails.
+#[test]
+fn a_bend_too_shallow_for_its_deduction_folds_but_has_no_flat_pattern() {
+    let dir = temp("unfoldable");
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [100, 60]}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "base_flange", "sketch": "Sketch1", "thickness": 2, "radius": 0.1, "bend": {"deduction": 3.325}}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "edge_flange", "name": "Lip", "length": 20, "angle": 45, "edges": [{"between": [[0, 0, 2], [100, 0, 2]]}]}),
+    );
+    let features = ok(&mut doc, json!({"op": "features"}));
+    let lip = features["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "Lip")
+        .unwrap()
+        .clone();
+    assert_eq!(lip["status"], "warning", "{lip}");
+    assert!(
+        lip["message"].as_str().unwrap().contains("no flat pattern"),
+        "{lip}"
+    );
+    let bodies = ok(&mut doc, json!({"op": "bodies"}));
+    assert!(bodies["bodies"][0]["volume_mm3"].as_f64().unwrap() > 100.0 * 60.0 * 2.0);
+    let dxf = dir.join("flat.dxf").to_string_lossy().into_owned();
+    let e = error(&mut doc, json!({"op": "export", "path": dxf}));
+    assert!(e.contains("no flat pattern"), "{e}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A reference plane suppressed in its part is still a mate end where it would be, as
+/// SolidWorks mates to it (FabSys mates Esc Surround Mid's MidPlaneV to Esc Surround R
+/// Bottom's suppressed Plane1); a sketch on it is suppressed with it.
+#[test]
+fn a_suppressed_plane_is_mated_to_where_it_would_be() {
+    let dir = temp("suppressed-plane");
+    let path = dir.join("Bottom.peet").to_string_lossy().into_owned();
+    let mut doc = Document::default();
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [100, 60]}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "extrude", "sketch": "Sketch1", "depth": 6}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "plane", "from": "right", "distance": 50, "name": "Plane1"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "sketch", "on": "Plane1", "name": "On it", "draw": [{"type": "circle", "center": [0, 0], "radius": 3}]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "suppress", "feature": "Plane1", "on": true}),
+    );
+    let features = ok(&mut doc, json!({"op": "features"}));
+    let status = |name: &str| {
+        features["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == name)
+            .unwrap()["status"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(status("Plane1"), "suppressed");
+    assert_eq!(status("On it"), "suppressed");
+    ok(&mut doc, json!({"op": "save", "path": path}));
+    let block = block(&dir, "Block.peet");
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": path, "name": "Bottom-1", "fixed": true, "at": [200, 0, 0]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": block, "name": "Mid-1", "at": [0, 100, 0]}),
+    );
+    let reply = ok(
+        &mut doc,
+        json!({"op": "mate", "type": "coincident", "a": {"component": "Mid-1", "plane": "right"},
+               "b": {"component": "Bottom-1", "plane": "Plane1"}}),
+    );
+    assert_eq!(reply["mate"]["status"], "ok", "{reply}");
+    let at = ok(&mut doc, json!({"op": "components"}));
+    let x = component(&at, "Mid-1")["at"][0].as_f64().unwrap();
+    assert!((x - 250.0).abs() < 1e-6, "{at}");
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -153,6 +153,12 @@ pub struct BendValues {
     pub thickness: f64,
     /// Bend allowance: the width of the bend region in the flat pattern.
     pub allowance: f64,
+    /// The allowance the bend model gives where it is not greater than zero (a deduction
+    /// too big for a shallow bend): the bend is folded as it would be with a K-factor of
+    /// 0.5 (`allowance` is that one's), as SolidWorks builds the folded part, but it can't
+    /// be unfolded (SolidWorks' flat pattern fails).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unfoldable: Option<f64>,
 }
 
 /// The inner radius a bend of radius 0 is given (see [`BendValues::new`]).
@@ -203,16 +209,38 @@ impl BendValues {
             BendModel::Allowance(ba) => ba,
             BendModel::Deduction(bd) => 2.0 * ossb - bd,
         };
-        if !(allowance.is_finite() && allowance > peet_math::tolerance::LINEAR) {
+        if !allowance.is_finite() {
             return Err(format!(
                 "The bend allowance works out at {allowance:.4} mm; it must be greater than zero. Check the bend model's value."
             ));
+        }
+        // Too small to unfold: folded all the same, as SolidWorks folds it (the folded
+        // part doesn't depend on the allowance), and its flat pattern refused
+        if allowance <= peet_math::tolerance::LINEAR {
+            return Ok(Self {
+                angle,
+                radius,
+                thickness,
+                allowance: angle * (radius + 0.5 * thickness),
+                unfoldable: Some(allowance),
+            });
         }
         Ok(Self {
             angle,
             radius,
             thickness,
             allowance,
+            unfoldable: None,
+        })
+    }
+
+    /// Why the bend can't be unfolded, if it can't.
+    pub fn unfold_error(&self) -> Option<String> {
+        self.unfoldable.map(|a| {
+            format!(
+                "The bend allowance of a {:.1}° bend works out at {a:.4} mm; it must be greater than zero to unfold it. The folded part is built, but it has no flat pattern: give the flange a bend model of its own (a smaller deduction, or a K-factor).",
+                self.angle.to_degrees()
+            )
         })
     }
 
@@ -293,7 +321,16 @@ mod tests {
     fn bad_values() {
         assert!(BendValues::new(BendModel::KFactor(0.5), 0.0, 1.0, 1.0).is_err());
         assert!(BendValues::new(BendModel::KFactor(0.5), 3.2, 1.0, 1.0).is_err());
-        assert!(BendValues::new(BendModel::Deduction(100.0), 1.0, 1.0, 1.0).is_err());
+        // A deduction too big for the bend: folded (at K = 0.5), but it can't be unfolded
+        let big = BendValues::new(BendModel::Deduction(100.0), 1.0, 1.0, 1.0).unwrap();
+        assert!(big.unfoldable.is_some() && big.unfold_error().is_some());
+        assert!((big.allowance - 1.5).abs() < 1e-12);
+        assert!(
+            BendValues::new(BendModel::Deduction(0.1), 1.0, 1.0, 1.0)
+                .unwrap()
+                .unfoldable
+                .is_none()
+        );
         let mut s = SheetSettings::default();
         assert!(s.check().is_ok());
         s.thickness = 0.0;

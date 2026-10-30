@@ -119,14 +119,17 @@ fn sheet_body(
     origin: FeatureId,
     stamp: u64,
 ) -> Result<(Body, Option<String>), FeatureError> {
+    let unfold = layout.unfold_error();
     let (solid, sheet) = build(layout)
         .map_err(|e| FeatureError(e.message(|o| model.name_of(FeatureId(o)).to_owned())))?;
     let pieces = sheet.outline.iter().filter(|l| l.outer).count();
-    let warning = (pieces > 1).then(|| {
-        format!(
-            "The sheet is in {pieces} separate pieces: cuts or reliefs cut part of it off. Check the cuts, the flanges' offsets from the ends of their edges, and the base flange's relief (its type and its ratio)."
-        )
-    });
+    let warning = (pieces > 1)
+        .then(|| {
+            format!(
+                "The sheet is in {pieces} separate pieces: cuts or reliefs cut part of it off. Check the cuts, the flanges' offsets from the ends of their edges, and the base flange's relief (its type and its ratio)."
+            )
+        })
+        .or(unfold);
     Ok((
         Body {
             face_names: face_names(&sheet),
@@ -1693,6 +1696,10 @@ pub(crate) fn apply_break_corner(
             index: i,
         };
         match sheet.corner_break(&body.solid, edge, def.kind, size, tag) {
+            // A face's inside corners (a notch's) are not chamfered: SolidWorks chamfers
+            // only the outside ones of the faces picked (Gear tray's Break-Corner1, with
+            // the back wall notch cut in its flange)
+            Ok(cut) if of_face && cut.3 && def.kind == peet_sheetmetal::BreakKind::Chamfer => {}
             Ok(cut) => cuts.push(cut),
             // A face's edge through the sheet that is not a corner of two sides (where a
             // bend or a curve meets it) is not one of its corners.

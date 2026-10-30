@@ -178,6 +178,9 @@ Use a plane when the mate locates a part by its datum rather than a solid face.
 `plane` takes the same selector as a sketch's `on`. Create named reference planes in
 the part before inserting it. A plane mate follows edits to that plane and keeps its
 reference when the plane is renamed. Standard planes work even in a part with no bodies.
+A reference plane suppressed in its part is still mated to, where it would be (as
+SolidWorks mates to Esc Surround R Bottom's suppressed Plane1), as long as what it is
+made from is built; nothing in the part is built on it.
 
 To reach a part inside a sub-assembly, give `component` a nonempty array from the
 assembly's own component down to the part. Each entry is a name or id in that level's
@@ -804,9 +807,9 @@ they move with it.
 - **In the part: `smart_feature`.** `sketch` is a sketch of the part, drawn where the other
   part's face will be (usually on the face or plane the part sits on): its lines, arcs and
   circles are the profile. When the component cuts several parts (a plinth bolt
-  through a floor and a plinth), each smart feature goes on the face it lies against (of
-  those given, the one parallel to its sketch and nearest it); `reference` (default 0) is
-  its place in SolidWorks' order of references, used where none lies against it. `end`: `sheet` (default: through the sheet or the
+  through a floor and a plinth), `reference` (default 0) is its place in the order of
+  the faces `apply_smart_features` is given: it goes on that face, wherever its sketch
+  is, as SolidWorks takes its library features' references in order. `end`: `sheet` (default: through the sheet or the
   material the face is on), `blind` with `depth`, `through_all`; `reverse` cuts away from
   the part. It changes nothing in the part itself. Several smart features may share a face.
 - **Patterned: `linear_pattern` of smart features (no other features with them).**
@@ -825,6 +828,11 @@ they move with it.
   through the material (`up to next`). They are named as SolidWorks names them,
   `Smart-Feature1<HingeMale-1>`, numbered on in each part. The reply's `applied` lists
   them, and `written` any linked file changed.
+- **Left out, not failed:** a smart feature whose cut would take nothing off its part
+  (its sketch is off the face it was given: the faces given in the wrong order, or the
+  component not where it should be) is not made, as SolidWorks leaves it out. The reply's
+  `left_out` lists each, with the part and why. Check it: an empty `applied` usually
+  means the faces are in the wrong order or the component is misplaced.
 - **Fails when** the component's part has no smart features ("not a smart component":
   add them with `smart_feature`, or use the right component), fewer faces are given than
   its features use (the error lists which feature goes on which face), a face is the

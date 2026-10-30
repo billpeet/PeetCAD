@@ -312,7 +312,7 @@ struct Assembled {
 type PartKey = (DefId, Option<crate::ConfigId>);
 
 /// The part a component shows: its definition in the configuration it uses.
-/// The reference planes a model's own features made (built, not suppressed), as mate ends
+/// The reference planes a model's own features made (built, or suppressed themselves), as mate ends
 /// see them: in the model's own coordinates.
 fn own_planes(
     model: &Model,
@@ -322,7 +322,11 @@ fn own_planes(
         .features()
         .filter_map(|feature| {
             let state = states.get(&feature.id)?;
-            if !matches!(state.status, Status::Ok | Status::Warning(_)) {
+            // A suppressed plane is still mated to, where it would be (see `rebuild`)
+            if !matches!(
+                state.status,
+                Status::Ok | Status::Warning(_) | Status::Suppressed
+            ) {
                 return None;
             }
             let plane = match state.output {
@@ -474,6 +478,27 @@ impl Engine {
                     .find(|p| run.states.get(p).is_some_and(|s| s.status.is_suppressed()))
                     .map(Status::SuppressedBy)
             };
+            // A reference plane suppressed itself is still worked out where what it is made
+            // from is built: SolidWorks mates to a suppressed plane where it would be (FabSys
+            // mates Esc Surround Mid to Esc Surround R Bottom's suppressed Plane1). Nothing
+            // built on it is.
+            if skipped == Some(Status::Suppressed) && matches!(feature.kind, FeatureKind::Plane(_))
+            {
+                self.build(model, &feature, params_key, &mut run);
+                let output = match run.states.get(&id).map(|s| s.output) {
+                    Some(o @ (Output::Plane(_) | Output::Frame(_))) => o,
+                    _ => Output::None,
+                };
+                run.states.insert(
+                    id,
+                    FeatureState {
+                        status: Status::Suppressed,
+                        output,
+                        rebuilt: false,
+                    },
+                );
+                continue;
+            }
             if let Some(status) = skipped {
                 let output = match &feature.kind {
                     // Still drawn (dimmed) so it can be found and edited.

@@ -225,6 +225,9 @@ pub fn export_bytes(
             let Some(sheet) = &sheet_body.sheet else {
                 return Err("That body is not sheet metal.".to_owned());
             };
+            if let Some(why) = sheet.layout.unfold_error() {
+                return Err(why);
+            }
             out.insert(
                 "flat_size".to_owned(),
                 point2_out(sheet.report().flat_size, units),
