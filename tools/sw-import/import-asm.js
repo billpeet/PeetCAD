@@ -881,9 +881,13 @@ function referenceEnds(cfg, rd, target, byPath, name, partFile) {
       ends.push({ e, h: dot3(e.params.slice(0, 3), L) });
     }
   });
+  // Not on the target, nor on another component of its part, which the equation changes too (Plinth PFC
+  // Assembly's RD2 sizes Pipe<1>, and the other pipe's end was as far from the plinth's face as its far channel)
+  const fileOf = c => (byPath.get(c) || {}).file;
+  const driven = c => c === target || (!!target && !!fileOf(target) && fileOf(c) === fileOf(target));
   const pairs = [];
   for (const x of ends) for (const y of ends) {
-    if (x.e.component === y.e.component || x.e.component === target || y.e.component === target) continue;
+    if (x.e.component === y.e.component || driven(x.e.component) || driven(y.e.component)) continue;
     if (x.h >= y.h || Math.abs(y.h - x.h - rd.value) > 1e-7) continue;
     pairs.push([x, y]);
   }
@@ -896,7 +900,7 @@ function referenceEnds(cfg, rd, target, byPath, name, partFile) {
   // Failing those, any two flat faces of the components (where SolidWorks has them) that far apart
   const faces = [];
   for (const c of cfg.components || []) {
-    if (c.path.includes("/") || c.path === target || c.suppression === 0) continue;
+    if (c.path.includes("/") || driven(c.path) || c.suppression === 0) continue;
     const file = partFile(c);
     if (!file) continue;
     const m = matrixOf(c.transform);
@@ -1231,6 +1235,12 @@ function importPlanes(peet, cfg, report, local) {
     // standard plane's normal, it is offset from that plane turned half round an axis in it
     const against = axis[1][0] * n[0] + axis[1][1] * n[1] + axis[1][2] * n[2] < 0;
     const turn = { op: "plane", from: axis[0], about: { right: "z", front: "z", top: "x" }[axis[0]], angle: 180 };
+    // Made on a component's face, or halfway between two (Plinth PFC Assembly's FrontPlane on its back channel,
+    // Escutcheon Door's Esc Mid between the escutcheon's ends): it follows them, as SolidWorks' does
+    if (!local && !f.suppressed) {
+      const following = followingPlane(peet, f, axis, against, turn);
+      if (following) { row.result = "imported"; row.note = following; continue; }
+    }
     let made;
     if (!against) made = peet.apply({ op: "plane", from: axis[0], distance: tidy(Math.abs(distance)), flip: distance < 0, name: f.name.trim() });
     else if (Math.abs(distance) < 1e-9) made = peet.apply({ ...turn, name: f.name.trim() });
@@ -1247,6 +1257,47 @@ function importPlanes(peet, cfg, report, local) {
     if (f.suppressed && made.ok) peet.apply({ op: "suppress", feature: f.name.trim() });
   }
   if (rows.length) report.planes = rows;
+}
+
+/**
+ * An assembly's reference plane SolidWorks made on a component's face (coincident with it), or halfway between two
+ * components' faces, as a PeetCAD plane of the assembly that follows them (`in_context` on the assembly's own
+ * plane): first made on the standard plane `axis`, facing SolidWorks' way (`against` it: on that plane turned
+ * half round, `turn`), then put on the faces, keeping its facing. It must come out where SolidWorks' is. How it was
+ * made, or null with nothing left of it.
+ */
+function followingPlane(peet, f, axis, against, turn) {
+  const v = (f.definition || {}).values || {};
+  const refs = [0, 1, 2].map(i => ({ ref: v[`Reference[${i}]`], how: v[`Constraint[${i}]`], by: v[`AngleOrDistance[${i}]`] || 0 })).filter(r => r.ref);
+  const onFace = r => r.ref.kind === "face" && r.ref.component && r.ref.surface === "plane" && r.ref.point && r.ref.normal;
+  const kinds = refs.map(r => r.how).join(",");
+  const mid = kinds === "128,128" && refs.every(onFace);
+  const on = refs.length === 1 && refs[0].how === 4 && onFace(refs[0]);
+  if (!mid && !on) return null;
+  const name = f.name.trim();
+  const mark = peet.backup();
+  const undo = () => { peet.restore(mark); return null; };
+  // Its base, facing SolidWorks' way
+  let base = axis[0];
+  if (against && !peet.apply({ ...turn, name: name + " turned" }).ok) return undo();
+  if (against) base = name + " turned";
+  const first = mid ? { op: "plane", a: base, b: base, name } : { op: "plane", from: base, distance: 0, name };
+  if (!peet.apply(first).ok) return undo();
+  const end = r => ({ component: r.ref.component.split("/"), face: { at: (r.ref.point.map(x => x * MM)).map(tidy), normal: r.ref.normal.map(tidy) } });
+  const bases = [];
+  for (const [i, r] of refs.entries()) {
+    const reply = peet.apply({ op: "in_context", feature: name, ...(mid ? { plane: i } : {}), from: end(r) });
+    if (!reply.ok || !reply.follows) return undo();
+    bases.push(reply.follows);
+  }
+  // Where SolidWorks has it, facing its way: its plane (or halfway between its two)
+  const m = matrixOf(f.planeTransform);
+  const n = m.R[2], o = m.t.map(x => x * MM);
+  const at = bases.length === 2 ? bases[0].origin.map((x, k) => (x + bases[1].origin[k]) / 2) : bases[0].origin;
+  const facing = bases[0].normal;
+  const d = [0, 1, 2].reduce((s, k) => s + (at[k] - o[k]) * n[k], 0);
+  if ([0, 1, 2].reduce((s, k) => s + facing[k] * n[k], 0) < 1 - 1e-6 || Math.abs(d) > 1e-3) return undo();
+  return mid ? "halfway between the faces of components it was made from, which it follows" : "on the face of the component it was made on, which it follows";
 }
 
 function importAssemblyFeatures(peet, cfg, report, byPath, want, local) {

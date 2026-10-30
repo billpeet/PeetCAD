@@ -957,6 +957,89 @@ fn a_bend_too_shallow_for_its_deduction_folds_but_has_no_flat_pattern() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A reference plane made in an assembly on a component's face follows that component as
+/// the mates move it (SolidWorks' Plinth PFC Assembly's FrontPlane, on its back channel,
+/// which FabSys mates the plinth by): `in_context` with no `component` makes the
+/// assembly's own plane follow.
+#[test]
+fn an_assembly_plane_on_a_components_face_follows_it() {
+    let dir = temp("own-plane");
+    let block = named_block(&dir, "Block.peet");
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": block, "name": "Front-1", "fixed": true}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": block, "name": "Back-1", "at": [0, 200, 0]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "fix", "component": "Back-1", "on": false}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "mate", "type": "coincident", "align": "aligned",
+               "a": {"component": "Back-1", "face": {"name": "Down"}}, "b": {"component": "Front-1", "face": {"name": "Down"}}}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "mate", "type": "coincident", "align": "aligned",
+               "a": {"component": "Back-1", "face": {"name": "Left"}}, "b": {"component": "Front-1", "face": {"name": "Left"}}}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "mate", "type": "distance", "distance": 100, "name": "Gap",
+               "a": {"component": "Back-1", "face": {"name": "Near"}}, "b": {"component": "Front-1", "face": {"name": "Far"}}}),
+    );
+    // The plane, made on a standard plane, then made to be on the back block's far face
+    // (it is that face offset by its distance, here none)
+    ok(
+        &mut doc,
+        json!({"op": "plane", "from": "front", "distance": 0, "name": "BackPlane"}),
+    );
+    let made = ok(
+        &mut doc,
+        json!({"op": "in_context", "feature": "BackPlane",
+               "from": {"component": "Back-1", "face": {"name": "Far"}}}),
+    );
+    assert_eq!(made["plane_of"], "BackPlane", "{made}");
+    // Another block, mated to the plane
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": block, "name": "Stop-1", "at": [300, 0, 0]}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "fix", "component": "Stop-1", "on": false}),
+    );
+    ok(
+        &mut doc,
+        // (The plane faces the way it was made, as the front plane does: -Y)
+        json!({"op": "mate", "type": "coincident", "align": "aligned",
+               "a": {"component": "Stop-1", "face": {"name": "Near"}}, "b": {"plane": "BackPlane"}}),
+    );
+    let near = |doc: &mut Document| {
+        let all = ok(doc, json!({"op": "components"}));
+        component(&all, "Stop-1")["min"][1].as_f64().unwrap()
+    };
+    assert!((near(&mut doc) - 220.0).abs() < 1e-6, "{}", near(&mut doc));
+    // The back block moves: the plane, and what is mated to it, go with it
+    ok(
+        &mut doc,
+        json!({"op": "edit_mate", "mate": "Gap", "distance": 300}),
+    );
+    assert!((near(&mut doc) - 420.0).abs() < 1e-6, "{}", near(&mut doc));
+    let e = error(
+        &mut doc,
+        json!({"op": "in_context", "sketch": "Sketch1", "from": {"component": "Back-1", "face": {"name": "Far"}}}),
+    );
+    assert!(e.contains("component"), "{e}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A reference plane suppressed in its part is still a mate end where it would be, as
 /// SolidWorks mates to it (FabSys mates Esc Surround Mid's MidPlaneV to Esc Surround R
 /// Bottom's suppressed Plane1); a sketch on it is suppressed with it.

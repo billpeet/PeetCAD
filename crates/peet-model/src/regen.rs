@@ -305,6 +305,12 @@ struct Assembled {
     external: Vec<crate::in_context::Resolved>,
     /// Whether an in-context reference moved, so its part changed and must be rebuilt.
     in_context_changed: bool,
+    /// The assembly's own planes that follow its components, where they moved to.
+    own_moved: Vec<(
+        FeatureId,
+        crate::in_context::Holder,
+        crate::in_context::Geom,
+    )>,
 }
 
 /// A definition of an assembly, in one of its configurations: the definition, and the
@@ -529,12 +535,13 @@ impl Engine {
         self.cache.retain(|id, _| run.states.contains_key(id));
         // An assembly's own reference planes (SolidWorks' planes inserted in the
         // assembly): fixed ends for its mates, as its standard planes are.
-        let own = own_planes(model, &run.states);
+        let mut own = own_planes(model, &run.states);
         let mut assembled = self.assemble(model, &mut run.stats, &own);
         // What the reference dimensions measure, which equations may read, and where the
         // geometry in-context parts follow is: a part an equation or an in-context
         // reference changes is rebuilt and the mates solved again, until nothing changes
-        // (SolidWorks solves the mates, then the in-context parts, and repeats).
+        // (SolidWorks solves the mates, then the in-context parts, and repeats). So are the
+        // assembly's own planes that follow its components.
         for round in 0..6 {
             let mut changed = false;
             if let Some(assembly) = model.assembly_mut() {
@@ -543,13 +550,31 @@ impl Engine {
                 }
             }
             let in_context = assembled.in_context_changed;
-            if !changed && !in_context {
+            let own_moved = !assembled.own_moved.is_empty();
+            if own_moved {
+                for (feature, holder, geom) in std::mem::take(&mut assembled.own_moved) {
+                    model.set_external_last(feature, holder, geom);
+                }
+                for index in 0..model.len() {
+                    let feature = model.feature_arc(index);
+                    if matches!(feature.kind, FeatureKind::Plane(_))
+                        && run
+                            .states
+                            .get(&feature.id)
+                            .is_some_and(|s| s.status.is_built())
+                    {
+                        self.build(model, &feature, params_key, &mut run);
+                    }
+                }
+                own = own_planes(model, &run.states);
+            }
+            if !changed && !in_context && !own_moved {
                 break;
             }
             // What expressions read now.
             model.refresh_dimension_values();
             let equations = model.assembly().is_some_and(|a| !a.equations().is_empty());
-            if (!equations && !in_context) || round == 5 {
+            if (!equations && !in_context && !own_moved) || round == 5 {
                 break;
             }
             if equations {
@@ -1045,6 +1070,14 @@ impl Engine {
                     .unwrap_or_default()
             },
         );
+        // The assembly's own planes on its components, where those now are (moved by the
+        // next round of `regenerate`).
+        let own_moved = crate::in_context::own_updates(model, &|id| {
+            let c = assembly
+                .component(id)
+                .filter(|c| !c.suppressed && !left_out.contains(&c.id))?;
+            place(c, frames.get(&id).copied().unwrap_or(c.placement))
+        });
 
         // ---- The components ----
         let mut instances = Vec::new();
@@ -1225,6 +1258,7 @@ impl Engine {
             references,
             external,
             in_context_changed,
+            own_moved,
         }
     }
 

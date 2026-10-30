@@ -749,6 +749,28 @@ moves on; unlocked, it catches up (140); broken, it stays 140 whatever the plate
 - **The assembly's own planes and origin** can be followed too: `from` with no
   `component`, `{"plane": "front"}` or `{"origin": true}` (SolidWorks relates a part's
   sketch to the assembly's Front Plane the same way).
+- **A reference plane of the assembly itself** follows a component's face when
+  `in_context` has no `component` and `feature` is the assembly's plane (SolidWorks' plane
+  inserted in an assembly on a component's face: FabSys mates a plinth by the plane on its
+  back channel). Make the plane first, offset 0 from a standard plane and facing the way
+  it should (it keeps that facing), then put it on the face. A mid plane follows two
+  faces: `plane` 0 and then `plane` 1. The reply's `follows` says where the face is. Mates
+  to the plane move with the component, and a sub-assembly's such plane is where its
+  components are wherever the sub-assembly is used.
+
+  ```jsonl
+  {"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [100, 60]}]}
+  {"op": "extrude", "sketch": "Sketch1", "depth": 6}
+  {"op": "new", "assembly": true, "keep": true}
+  {"op": "insert", "part": 1, "name": "Front", "fixed": true}
+  {"op": "insert", "part": 1, "name": "Back", "at": [0, 200, 0], "fixed": true}
+  {"op": "plane", "from": "front", "distance": 0, "name": "BackPlane"}
+  {"op": "in_context", "feature": "BackPlane", "from": {"component": "Back", "face": {"normal": [0, 1, 0]}}}
+  {"op": "plane", "a": "front", "b": "front", "name": "Between"}
+  {"op": "in_context", "feature": "Between", "plane": 0, "from": {"component": "Front", "face": {"normal": [0, 1, 0]}}}
+  {"op": "in_context", "feature": "Between", "plane": 1, "from": {"component": "Back", "face": {"normal": [0, -1, 0]}}}
+  {"op": "features"}
+  ```
 - **A part inside a sub-assembly** follows too. Made in the sub-assembly (its file is the
   context), it follows whenever the sub-assembly rebuilds, also inside a bigger assembly,
   which rebuilds its sub-assemblies first: `external_references` there lists it with the

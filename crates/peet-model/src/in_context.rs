@@ -787,6 +787,39 @@ pub(crate) fn locate(end: &MateEnd, placed: &crate::mate::Placed) -> Result<Geom
     Ok(geom_in(&bodies, &frames, model, &plane_of, geom)?.moved(&placed.frame))
 }
 
+/// The assembly's own features whose planes follow its components (a reference plane made
+/// in the assembly on a component's face, as SolidWorks' Plinth PFC Assembly's FrontPlane on
+/// its back channel, or halfway between two of them, as Escutcheon Door's Esc Mid): where
+/// each now is, in the assembly's coordinates, where that moved. `at` is a component where
+/// the mates put it.
+pub(crate) fn own_updates(
+    model: &Model,
+    at: &dyn Fn(CompId) -> Option<crate::mate::Placed>,
+) -> Vec<(FeatureId, Holder, Geom)> {
+    let mut out = Vec::new();
+    for r in model.external_references() {
+        let x = r.external;
+        if !x.component.is_empty() || x.locked || x.broken || !matches!(r.holder, Holder::Plane(_))
+        {
+            continue;
+        }
+        let Some(other) = x.target.component().and_then(at) else {
+            continue;
+        };
+        let Ok(Geom::Plane(p)) = locate(&x.target, &other) else {
+            continue;
+        };
+        let now = match x.last {
+            Geom::Plane(was) => Geom::Plane(plane_like(p, was)),
+            _ => Geom::Plane(p),
+        };
+        if !now.same(&x.last, 1e-9) {
+            out.push((r.feature, r.holder, now));
+        }
+    }
+    out
+}
+
 /// The in-context references of the assembly's parts (its components, and the parts inside
 /// its sub-assemblies at any depth) whose context is this assembly (`context`, its name as
 /// [`context_key`] has it): for each, where what it follows is now in its part's
