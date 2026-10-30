@@ -1059,7 +1059,9 @@ door is over 1500 high, so the last `set` suppresses it.
   expression is not 0, and unsuppresses it while it is 0 (SolidWorks' `suppressed` is 1,
   `unsuppressed` 0). It decides over `suppress` until cleared with `"value": null`.
 - **`suppress` with `"feature": "FEATURE@COMPONENT"`** suppresses (or with `"on": false`
-  unsuppresses) a feature of the component's part, in every instance of it.
+  unsuppresses) a feature of the component's part, in the configuration of the part the
+  component shows (as SolidWorks does): every component showing that configuration
+  follows; those showing another configuration of the part keep theirs.
 - **`reference_dimension`** measures the distance between two ends (as a mate's: two
   parallel flat faces or planes, a point and a plane, points, lines) where the mates put
   the components. Expressions read it as `RD1@Annotations`, as SolidWorks does, so a pipe
