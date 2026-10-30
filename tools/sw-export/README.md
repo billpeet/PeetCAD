@@ -8,7 +8,7 @@ It opens each file read-only in its own SolidWorks instance and never saves it. 
 to run if the instance it gets is under user control or has documents open.
 
 ```
-peet-sw-export.exe <input-list.txt> <output-directory> [--step] [--dxf] [--no-selections]
+peet-sw-export.exe <input-list.txt> <output-directory> [--step] [--dxf] [--no-selections] [--unsuppress-always-off]
 ```
 
 - `input-list.txt`: one path per line (`.sldprt` or `.sldasm`).
@@ -17,6 +17,20 @@ peet-sw-export.exe <input-list.txt> <output-directory> [--step] [--dxf] [--no-se
 - `--no-selections`: don't read the edges, faces and sketches that feature definitions
   refer to. Reading them rolls the model back to each feature in turn, which is the slow
   part and the one most likely to upset SolidWorks. Use it if an export hangs or fails.
+- `--unsuppress-always-off` (parts; off by default): read what a feature suppressed in
+  every configuration refers to. SolidWorks gives such a feature's selections as null (an
+  edge flange's `Edges: [null]`: Door's `L`/`RInterlockingFlange1`/`2` and
+  `L`/`RLockingDoorFlange`), so the importer can't rebuild it. With the flag, in each
+  configuration that is not a flat pattern, each such feature (not sketches, planes or
+  folders) is unsuppressed in that configuration only (`SetSuppression2`, with the
+  suppressed features it is built on, parents first), the part rebuilt, its definition read
+  again and the faces it and its sub-features make read, then everything unsuppressed is
+  suppressed again, last first, and the part rebuilt. The document stays read-only and is
+  never saved. The feature keeps `suppressed: true`; its `definition` is the one read
+  unsuppressed, and `readUnsuppressed` says so: `configuration`, `unsuppressed` (names),
+  `faces` (as a body's), `errorCode` if it rebuilt with an error, `error` if the read
+  failed (then the definition is the suppressed one). Each feature is guarded on its own;
+  `export.log` lists what was read. Ignored with `--no-selections`.
 - Output: the JSON files, `export.log` and `summary.json`. A document that could not be
   fully exported still gets a file, with `completed` false and the reason.
 - Exit code: 0 when every document was fully exported, 1 when one was not, 2 for wrong
@@ -176,6 +190,22 @@ ssh USER@HOST powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Fil
   -OutputDirectory C:\Users\USER\AppData\Local\PeetSwExport\output -Step -Dxf
 scp USER@HOST:C:/Users/USER/AppData/Local/PeetSwExport/output/* <local folder>
 ```
+
+Door's interlocking flanges (suppressed in every configuration) are read with
+`-UnsuppressAlwaysOff`, on Door alone, into a folder of its own (it writes a new
+`Door.SLDPRT.swx.json`, which then replaces the one in `exports\v7-run`; `--step`/`--dxf`
+as for that export):
+
+```powershell
+Set-Content C:\Users\USER\AppData\Local\PeetSwExport\door.txt '\\nas\Design\Solidworks\Templates\Door.SLDPRT'
+ssh USER@HOST powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `
+  C:\Users\USER\AppData\Local\PeetSwExport\bin\RunInDesktopSession.ps1 `
+  -InputList C:\Users\USER\AppData\Local\PeetSwExport\door.txt `
+  -OutputDirectory C:\Users\USER\AppData\Local\PeetSwExport\door -Step -Dxf -UnsuppressAlwaysOff
+```
+
+`export.log` then has a line `<flange> in <configuration>: read unsuppressed (...)` for each
+flange and configuration, and each flange's `Edges` in the file are no longer null.
 
 ## Status
 
