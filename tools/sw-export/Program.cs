@@ -33,6 +33,7 @@ internal static class Program
     private static bool exportStep;
     private static bool exportDxf;
     private static bool readSelections = true;
+    private static bool unsuppressAlwaysOff;
     private static ModelDoc2? currentDoc;
     private static SldWorks? application;
 
@@ -53,13 +54,14 @@ internal static class Program
     {
         var positional = args.Where(a => !a.StartsWith("--")).ToArray();
         var flags = args.Where(a => a.StartsWith("--")).ToArray();
-        if (positional.Length != 2 || flags.Except(new[] { "--step", "--dxf", "--no-selections" }).Any()) {
-            Console.Error.WriteLine("Usage: peet-sw-export.exe <input-list.txt> <output-directory> [--step] [--dxf] [--no-selections]");
+        if (positional.Length != 2 || flags.Except(new[] { "--step", "--dxf", "--no-selections", "--unsuppress-always-off" }).Any()) {
+            Console.Error.WriteLine("Usage: peet-sw-export.exe <input-list.txt> <output-directory> [--step] [--dxf] [--no-selections] [--unsuppress-always-off]");
             return 2;
         }
         exportStep = flags.Contains("--step");
         exportDxf = flags.Contains("--dxf");
         readSelections = !flags.Contains("--no-selections");
+        unsuppressAlwaysOff = flags.Contains("--unsuppress-always-off");
 
         outputDirectory = Path.GetFullPath(positional[1]);
         Directory.CreateDirectory(outputDirectory);
@@ -191,6 +193,16 @@ internal static class Program
                 configurations.Add(DumpConfiguration(doc, name, isAssembly, Path.GetFileName(path)));
             }
 
+            // Opt-in: what a feature suppressed in every configuration refers to, read with it unsuppressed for
+            // a moment in each configuration (the document is read-only and never saved)
+            if (unsuppressAlwaysOff && !isAssembly && readSelections) {
+                if (TryJson(() => ReadAlwaysSuppressed(doc, configurations), "features suppressed in every configuration") is { } failed)
+                    Log("  " + failed["error"]);
+                var active = (string)root["activeConfiguration"]!;
+                if (doc.ConfigurationManager.ActiveConfiguration.Name != active)
+                    Try(() => (object)doc.ShowConfiguration2(active));
+            }
+
             // Every external reference of the document (in-context features and others), as SolidWorks' List
             // External References has them. Opened alone, a part's in-context references are out of context.
             root["externalReferences"] = TryList(() => ExternalReferences("the document", (out object models, out object components,
@@ -273,6 +285,131 @@ internal static class Program
         }
 
         return new Json { ["path"] = path, ["file"] = fileName, ["completed"] = error == null, ["error"] = error, ["seconds"] = timer.Elapsed.TotalSeconds };
+    }
+
+    /// <summary>Feature types whose export does not depend on the feature being live: not read again.</summary>
+    private static readonly HashSet<string> ReadWhileSuppressed = new(StringComparer.Ordinal) {
+        "ProfileFeature", "3DProfileFeature", "RefPlane", "RefAxis", "RefPoint", "CoordSys", "FtrFolder",
+        "SketchBlockDef", "SketchBlockInst", "Comments", "MaterialFolder", "HistoryFolder", "SensorFolder",
+        "DetailCabinet", "SurfaceBodyFolder", "SolidBodyFolder", "EqnFolder", "OriginProfileFeature"
+    };
+
+    /// <summary>
+    /// <c>--unsuppress-always-off</c> (parts). A feature suppressed in every configuration is exported as SolidWorks
+    /// keeps it suppressed: its definition's selections (an edge flange's <c>Edges</c>) are null, since what they
+    /// refer to is not in the body. Door's six interlocking flanges are such. For each configuration (not a flat
+    /// pattern one), each such feature is unsuppressed in that configuration for a moment, with the suppressed
+    /// features it is built on, the part rebuilt, its definition read again (selections and all) and the faces it
+    /// makes, then everything unsuppressed is suppressed again in reverse order and the part rebuilt. The document
+    /// is read-only and is never saved. In the configuration's <c>features</c> the feature keeps
+    /// <c>suppressed: true</c>; its <c>definition</c> is replaced by the one read unsuppressed, and it gets
+    /// <c>readUnsuppressed</c> (the configuration, what was unsuppressed, the faces it made and, where the read
+    /// failed, the error). Every feature is read on its own, guarded: a failure is logged and leaves the export as
+    /// it was. Returns null; what was done is logged.
+    /// </summary>
+    private static Json? ReadAlwaysSuppressed(ModelDoc2 doc, List<Json> configurations)
+    {
+        static IEnumerable<Json> Walk(object? list)
+        {
+            if (list is not IEnumerable<Json> items)
+                yield break;
+            foreach (var item in items) {
+                yield return item;
+                foreach (var sub in Walk(item.TryGetValue("sub", out var s) ? s : null))
+                    yield return sub;
+            }
+        }
+        var live = configurations.Where(c => c["flatPattern"] is not true && c.ContainsKey("features")).ToList();
+        if (live.Count == 0)
+            return null;
+        // Suppressed in every configuration, by name
+        var always = Walk(live[0]["features"]).Where(f => f["suppressed"] is true && !ReadWhileSuppressed.Contains((string)f["type"]!))
+            .Select(f => (string)f["name"]!).Distinct().ToList();
+        always = always.Where(n => live.All(c => Walk(c["features"]).Where(f => (string)f["name"]! == n).All(f => f["suppressed"] is true))).ToList();
+        if (always.Count == 0)
+            return null;
+        Log($"  Suppressed in every configuration, read unsuppressed: {string.Join(", ", always)}");
+
+        foreach (var configuration in live) {
+            var name = (string)configuration["name"]!;
+            if (doc.ConfigurationManager.ActiveConfiguration.Name != name
+                && (!doc.ShowConfiguration2(name) || doc.ConfigurationManager.ActiveConfiguration.Name != name)) {
+                Log($"  Cannot activate {name} to read its suppressed features");
+                continue;
+            }
+            var byName = new Dictionary<string, Feature>(StringComparer.Ordinal);
+            for (var f = (Feature?)doc.FirstFeature(); f != null; f = (Feature?)f.GetNextFeature())
+                CollectFeatures(f, byName);
+            foreach (var featureName in always) {
+                if (!byName.TryGetValue(featureName, out var feature))
+                    continue;
+                var read = new Json { ["configuration"] = name };
+                var unsuppressed = new List<Feature>();
+                try {
+                    Unsuppress(feature, unsuppressed, new HashSet<string>(StringComparer.Ordinal));
+                    read["unsuppressed"] = unsuppressed.Select(f => f.Name).ToList();
+                    doc.ForceRebuild3(false);
+                    var errorCode = feature.GetErrorCode2(out var isWarning);
+                    if (errorCode != 0)
+                        read["errorCode"] = errorCode;
+                    var definition = TryJson(() => DumpDefinition(doc, feature, feature.GetTypeName2(), false), "definition of " + featureName);
+                    // Its faces, and those of the features it made (an edge flange's bend)
+                    var own = new HashSet<string>(StringComparer.Ordinal) { featureName };
+                    for (var child = (Feature?)feature.GetFirstSubFeature(); child != null; child = (Feature?)child.GetNextSubFeature())
+                        own.Add(child.Name);
+                    read["faces"] = ArrayOf(((PartDoc)doc).GetBodies2((int)swBodyType_e.swSolidBody, false)).Cast<Body2>()
+                        .SelectMany(b => ArrayOf(b.GetFaces()).Cast<Face2>())
+                        .Select(Face).Where(f => f["feature"] is string made && own.Contains(made)).ToList();
+                    foreach (var entry in Walk(configuration["features"]).Where(f => (string)f["name"]! == featureName)) {
+                        if (definition != null)
+                            entry["definition"] = definition;
+                        entry["readUnsuppressed"] = read;
+                    }
+                    Log($"  {featureName} in {name}: read unsuppressed ({unsuppressed.Count} unsuppressed, {((List<Json>)read["faces"]!).Count} faces)");
+                }
+                catch (Exception ex) {
+                    read["error"] = ex.Message;
+                    foreach (var entry in Walk(configuration["features"]).Where(f => (string)f["name"]! == featureName))
+                        entry["readUnsuppressed"] = read;
+                    Log($"  {featureName} in {name}: could not be read unsuppressed: {ex.Message}");
+                }
+                finally {
+                    // Back as it was, last unsuppressed first
+                    for (var i = unsuppressed.Count - 1; i >= 0; i--) {
+                        var back = unsuppressed[i];
+                        if (Try(() => (object)back.SetSuppression2((int)swFeatureSuppressionAction_e.swSuppressFeature,
+                                (int)swInConfigurationOpts_e.swThisConfiguration, null)) is not true)
+                            Log($"  {back.Name} in {name}: could not be suppressed again");
+                    }
+                    Try(() => (object)doc.ForceRebuild3(false));
+                }
+            }
+        }
+        return null;
+
+        static void CollectFeatures(Feature feature, Dictionary<string, Feature> into)
+        {
+            into[feature.Name] = feature;
+            for (var child = (Feature?)feature.GetFirstSubFeature(); child != null; child = (Feature?)child.GetNextSubFeature())
+                if (!into.ContainsKey(child.Name))
+                    CollectFeatures(child, into);
+        }
+
+        // The feature and, first, the suppressed features it is built on, in this configuration only
+        static void Unsuppress(Feature feature, List<Feature> done, HashSet<string> seen)
+        {
+            if (!seen.Add(feature.Name))
+                return;
+            var state = ArrayOf(feature.IsSuppressed2((int)swInConfigurationOpts_e.swThisConfiguration, null));
+            if (state.Length == 0 || !Convert.ToBoolean(state[0]))
+                return;
+            foreach (var parent in ArrayOf(Try(() => feature.GetParents())).OfType<Feature>())
+                Unsuppress(parent, done, seen);
+            if (!feature.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature,
+                    (int)swInConfigurationOpts_e.swThisConfiguration, null))
+                throw new InvalidOperationException("SolidWorks did not unsuppress " + feature.Name);
+            done.Add(feature);
+        }
     }
 
     private static Json DumpConfiguration(ModelDoc2 doc, string name, bool isAssembly, string fileName)

@@ -1876,7 +1876,18 @@ function importPart(doc, dir) {
   }
 
   /** The faces a feature has in SolidWorks' final body. */
-  const facesOf = name => (cur.bodies || []).flatMap(b => b.faces).filter(face => face.feature === name);
+  // A feature suppressed in every configuration has no faces in SolidWorks' body; an export made with
+  // `--unsuppress-always-off` has the faces it makes when unsuppressed (`readUnsuppressed`), which stand in
+  const readFaces = new Map();
+  const unsuppressedFaces = () => {
+    if (!readFaces.has(cur)) {
+      const list = [];
+      (function walk(xs) { for (const x of xs || []) { if (x.readUnsuppressed && x.readUnsuppressed.faces) list.push(...x.readUnsuppressed.faces); walk(x.sub); } })(cur.features);
+      readFaces.set(cur, list);
+    }
+    return readFaces.get(cur);
+  };
+  const facesOf = name => [...(cur.bodies || []).flatMap(b => b.faces), ...unsuppressedFaces()].filter(face => face.feature === name);
 
   /**
    * A sketch on the flat face of the part through a point, looking along a direction, for geometry that comes

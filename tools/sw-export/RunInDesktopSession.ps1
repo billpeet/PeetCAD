@@ -4,6 +4,7 @@ param(
     [switch]$Step,
     [switch]$Dxf,
     [switch]$NoSelections,
+    [switch]$UnsuppressAlwaysOff,
     [int]$TimeoutMinutes = 60
 )
 # Run on the SolidWorks host, for example over SSH. SolidWorks cannot be started from an SSH session, so the
@@ -17,6 +18,7 @@ $arguments = '"' + $InputList + '" "' + $OutputDirectory + '"'
 if ($Step) { $arguments += ' --step' }
 if ($Dxf) { $arguments += ' --dxf' }
 if ($NoSelections) { $arguments += ' --no-selections' }
+if ($UnsuppressAlwaysOff) { $arguments += ' --unsuppress-always-off' }
 
 $action = New-ScheduledTaskAction -Execute $exe -Argument $arguments -WorkingDirectory $PSScriptRoot
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
