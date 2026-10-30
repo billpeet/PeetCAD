@@ -58,6 +58,14 @@ component how far it ended up (`off_mm`) and how free it still is. The verdict i
 component is within a micron of SolidWorks' placement and every live mate and component is imported.
 Each other configuration gets a verdict of its own, in the report's `configurations`.
 
+What the export leaves open is settled by where SolidWorks has the components. A slot mate (whose
+constraint the export never gives) is centred if that moves nothing, else free: every slot mate of the
+library has its pin at its slot's middle, and SolidWorks keeps it there when the parts change size. An end
+SolidWorks gives only numbers for that are more than a millimetre off its part (a mate of a suppressed
+component, last solved for other sizes) is no face of the part, and the mate is left out, as SolidWorks
+fails it when the component is unsuppressed; for a parallel or angle mate, where only the direction counts,
+the place doesn't matter.
+
 With a format 6 export the assembled geometry is checked too (`mass`): PeetCAD's volume and box against
 SolidWorks' STEP of the configuration (`<Name>.SLDASM.<configuration>.step` beside the export), measured by
 PeetCAD, or SolidWorks' mass properties where there is no STEP. The STEP is preferred because SolidWorks'
@@ -194,7 +202,11 @@ Besides the features, it brings over:
   configuration and built there, where SolidWorks' body has it to check against. One
   that is live nowhere is built and then suppressed in every configuration, so that an
   equation or FabSys can bring it back; it can't be checked. One that can't be built is
-  recorded as suppressed, with the reason.
+  recorded as suppressed, with the reason. An edge flange whose edges the export lacks
+  (SolidWorks can't build it in the part as it is) is put on the edges its outline
+  converts, where SolidWorks last solved it; a live flange on the same edge, which a
+  script suppresses before unsuppressing this one, is suppressed while it is built
+  (Door's interlocking and locking flanges, on RightReturn's and LeftReturn's edges).
 - **The names of faces and edges**, with `name_face` and `name_edge`.
 - **Equations in force.** A global variable becomes a parameter, a dimension set by a
   formula gets the formula, a feature suppressed by a condition gets a suppression rule.
@@ -229,7 +241,9 @@ few relations are found. Before the third, what is inside a sketch block is miss
 the way a distance is measured is worked out from the points.
 
 A sketch block is drawn as plain geometry where each instance puts it: PeetCAD sketches
-have no blocks, so the grouping is lost.
+have no blocks, so the grouping is lost. What each instance put in the sketch is held
+together (each point across and up from the block's first, each circle its size), so
+that it moves as one, as SolidWorks' block does; it can't turn, which SolidWorks' can.
 
 ## Verdicts
 
