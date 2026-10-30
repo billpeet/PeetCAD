@@ -100,7 +100,9 @@ rough placement decides which of several possible positions is taken.
   - `concentric`: two axes in line (a pin in a hole).
   - `parallel`: planes or lines.
   - `distance` (with `distance`): the gap between two planes, or between points, lines
-    and planes.
+    and planes. A straight edge and a plane: the edge is kept along the plane, the
+    distance away; an edge square to the plane (as SolidWorks takes one) is measured
+    from its middle and stays square.
   - `angle` (with `angle`, in degrees, between 0 and 180): between two planes or lines.
   - `fasten`: `a` and `b` are components alone (`"a": "Plate"`). `b` keeps its place
     relative to `a` as it is now.
@@ -1059,7 +1061,9 @@ door is over 1500 high, so the last `set` suppresses it.
   expression is not 0, and unsuppresses it while it is 0 (SolidWorks' `suppressed` is 1,
   `unsuppressed` 0). It decides over `suppress` until cleared with `"value": null`.
 - **`suppress` with `"feature": "FEATURE@COMPONENT"`** suppresses (or with `"on": false`
-  unsuppresses) a feature of the component's part, in every instance of it.
+  unsuppresses) a feature of the component's part, in the configuration of the part the
+  component shows (as SolidWorks does): every component showing that configuration
+  follows; those showing another configuration of the part keep theirs.
 - **`reference_dimension`** measures the distance between two ends (as a mate's: two
   parallel flat faces or planes, a point and a plane, points, lines) where the mates put
   the components. Expressions read it as `RD1@Annotations`, as SolidWorks does, so a pipe
