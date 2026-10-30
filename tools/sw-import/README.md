@@ -99,7 +99,7 @@ Compares what FabSys built for a job in PeetCAD (FabSys.Run's `--out` folder: th
 and the parts and sub-assemblies beside it) with what it built in SolidWorks: exports (`tools/sw-export`, with
 `--step` and `--dxf`) of the job's root assembly and every part and sub-assembly in its folder. Components are
 matched by their path of instance names with each side's job number taken out (`21455-2 MS2 Floor-1` and
-`21445-2 MS2 Floor-1` are one), and paired by file and position where they are numbered differently. For each
+`21445-2 MS2 Floor-1` are one). For each
 component it reports how far apart the two placements are (as `import-asm.js` measures; a sub-assembly is judged by
 its parts), its configuration, suppression and visibility, PeetCAD's status for it, and its part: volume and box
 (SolidWorks' STEP of the configuration, measured by PeetCAD), flat size (its flat DXF, or its unfolded flat-pattern
@@ -107,7 +107,16 @@ configuration), features suppressed differently, dimensions with the same addres
 made geometry on one side only (where a smart component's cut went). Mates of the root and of each sub-assembly
 both have, by FabSys's names (`Coincident_<component>_<face>_…`), present on both and solving alike (a mate of a
 suppressed component counts as suppressed, and only the active configuration's state is used: an export's mates
-of other configurations are stale). The whole assembly's volume against its STEP and box against SolidWorks'
+of other configurations are stale).
+
+Instance numbers are not compared. SolidWorks numbers a second FabSys run into one assembly on from the instances
+deleted before (`-2`, `-11`…) where a fresh PeetCAD run numbers from `-1`, so components are paired level by level
+under their paired parent: by file, then by FabSys's name without its number, and within a file in order of their
+numbers or by where they are, whichever puts more of them where the other side has them (the row's `numbered`
+says when they differ). A mate's name is read through the pairing (each component's instance name becomes its
+pair's); mates whose names still don't match, and the ones SolidWorks named itself (`Coincident12`, where FabSys's
+name was taken), are paired by what they mate: type, components through the pairing, and face, edge or named
+plane. The whole assembly's volume against its STEP and box against SolidWorks'
 extreme points. A verdict per component and for the job.
 
 In place of exports it takes a FabSys.Run report of a dry run (`--backend dryrun --report x.json`, on a FabSys.Run
