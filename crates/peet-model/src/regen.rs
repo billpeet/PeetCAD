@@ -1672,6 +1672,19 @@ impl Engine {
                     }
                 }
             }
+            // A pattern of smart features changes nothing here, as they don't: its copies
+            // are made where the smart component is applied (see `apply_smart_features`).
+            // Its count and spacing are still checked.
+            FeatureKind::Pattern(p) if smart_seeds(model, &p.seeds) => {
+                match ctx.pattern_motions(&p.def, &p.seeds) {
+                    Err(m) => fail(m, Output::None),
+                    Ok(_) => FeatureState {
+                        status: Status::Ok,
+                        output: Output::None,
+                        rebuilt: true,
+                    },
+                }
+            }
             FeatureKind::Pattern(p) => {
                 let inputs = (|| {
                     let motions = ctx.pattern_motions(&p.def, &p.seeds)?;
@@ -2571,6 +2584,16 @@ impl<'m> Ctx<'m, '_> {
     }
 }
 
+/// Whether a pattern copies smart features only (and at least one).
+pub fn smart_seeds(model: &Model, seeds: &[FeatureId]) -> bool {
+    !seeds.is_empty()
+        && seeds.iter().all(|id| {
+            model
+                .feature(*id)
+                .is_some_and(|f| matches!(f.kind, FeatureKind::Smart(_)))
+        })
+}
+
 /// Identifies the copied features' inputs: their definitions and their sketches.
 fn seed_key(model: &Model, seeds: &[FeatureId], out_keys: &HashMap<FeatureId, u64>) -> u64 {
     let mut key = 0;
@@ -2773,6 +2796,11 @@ impl<'m> Ctx<'m, '_> {
                         def: f,
                         height: self.scalar(&f.height, ScalarKind::Length, "Height")?,
                     }
+                }
+                FeatureKind::Smart(_) => {
+                    return Err(format!(
+                        "{name} is a smart feature, which a pattern copies only with other smart features: their copies are made where the smart component is applied. Pattern it on its own."
+                    ));
                 }
                 other => {
                     return Err(format!(

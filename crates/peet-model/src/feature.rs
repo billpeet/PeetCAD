@@ -446,7 +446,7 @@ pub struct BaseFlangeFeature {
 }
 
 /// What patterns and mirrors copy, for messages.
-pub const COPIED: &str = "patterns and mirrors copy extrusions, cuts, revolves, holes, sheet metal cuts, forms, edge and mitre flanges, tabs, break corners, drafts of the faces of features they also copy, and other patterns and mirrors.";
+pub const COPIED: &str = "patterns and mirrors copy extrusions, cuts, revolves, holes, sheet metal cuts, forms, edge and mitre flanges, tabs, break corners, drafts of the faces of features they also copy, and other patterns and mirrors; a pattern of smart features only, whose copies are made where the smart component is applied.";
 
 impl BaseFlangeFeature {
     pub fn new(sketch: FeatureId) -> Self {
@@ -1286,6 +1286,7 @@ impl FeatureKind {
                     | Self::Draft(_)
                     | Self::Pattern(_)
                     | Self::Mirror(_)
+                    | Self::Smart(_)
             ),
         }
     }
