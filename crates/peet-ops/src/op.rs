@@ -715,6 +715,8 @@ pub enum Op {
     },
     /// In-context references: make, list, lock or break them.
     InContext(crate::in_context::InContextOp),
+    /// A smart component's features applied in an assembly.
+    Smart(crate::smart::SmartOp),
     /// Open a component's part as a document of its own (see
     /// [`crate::apply_session`]): saving that document stores it back.
     OpenComponent {
@@ -826,6 +828,7 @@ impl Op {
             Self::DeleteReference { .. } => "delete",
             Self::MakeIndependent { .. } => "make_independent",
             Self::InContext(op) => op.word(),
+            Self::Smart(op) => op.word(),
             Self::SetPart { .. } => "set_part",
             Self::OpenComponent { .. } => "open_component",
             Self::Undo => "undo",
@@ -1231,6 +1234,9 @@ fn read(op: &str, a: &mut Args, doc: &Document) -> Result<Op, String> {
     if let Some(found) = crate::in_context::parse(op, a) {
         return found;
     }
+    if let Some(found) = crate::smart::parse(op, a) {
+        return found;
+    }
     if let Some(found) = crate::assembly::parse(op, a) {
         return found;
     }
@@ -1599,6 +1605,7 @@ fn read(op: &str, a: &mut Args, doc: &Document) -> Result<Op, String> {
                     .iter()
                     .map(|(_, n, ..)| *n),
             );
+            all.extend(crate::smart::SMART_OPS.iter().map(|(_, n, ..)| *n));
             all.sort_unstable();
             all.dedup();
             return Err(format!(

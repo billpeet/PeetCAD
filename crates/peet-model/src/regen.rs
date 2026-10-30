@@ -2093,6 +2093,16 @@ impl Engine {
                     }
                 }
             }
+            // A smart feature changes nothing here: it is a profile, made into a cut in the
+            // parts the component is applied to (see `apply_smart_features`).
+            FeatureKind::Smart(s) => match ctx.sketch_input(s.sketch) {
+                Err(m) => fail(m, Output::None),
+                Ok(_) => FeatureState {
+                    status: Status::Ok,
+                    output: Output::None,
+                    rebuilt: true,
+                },
+            },
             // Reference geometry is a few vector operations: always recomputed.
             FeatureKind::Plane(def) => reference(ctx.plane_def(def).map(Output::Plane)),
             FeatureKind::Axis(def) => reference(ctx.axis_def(def).map(Output::Axis)),

@@ -82,8 +82,8 @@ pub use feature::{
     CornerFeature, EdgeFlangeFeature, ExtrudeFeature, Feature, FeatureId, FeatureKind, FoldFeature,
     FormFeature, HemFeature, JogFeature, LinearDirection, MirrorFeature, MiterFlangeFeature,
     PatternDef, PatternFeature, PlaneDef, PlaneRef, PointDef, PointRef, Scalar, ScalarKind,
-    SheetCutEnd, SheetCutFeature, SheetSettingsDef, SketchFeature, SketchedBendFeature, StdAxis,
-    StdPlane, UnfoldFeature,
+    SheetCutEnd, SheetCutFeature, SheetSettingsDef, SketchFeature, SketchedBendFeature,
+    SmartFeature, StdAxis, StdPlane, UnfoldFeature,
 };
 pub use history::History;
 pub use hole::{HoleEnd, HoleFeature, HoleFit, HoleKind, HoleSizes, METRIC, MetricSize};

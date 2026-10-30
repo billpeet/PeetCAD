@@ -360,9 +360,10 @@ function importPart(doc, dir) {
     if (!reply.ok) return { ok: false, message: reply.error };
     const created = reply.created || [];
     const failed = created.filter(c => c.status === "failed");
-    // A feature suppressed everywhere in SolidWorks whose cut lies off the part at these sizes (Escutcheon's
-    // third hinge's holes, below the part until it is 1500 tall) is kept, suppressed, as SolidWorks keeps it
-    if (failed.length && asleepNow && failed.every(c => /doesn't remove any material: its shape is off/.test(c.message || ""))
+    // A feature suppressed everywhere in SolidWorks that removes nothing here (Escutcheon's third hinge's
+    // holes, below the part until it is 1500 tall; a cut whose way into the sheet nothing shows) is kept,
+    // suppressed, as SolidWorks keeps it, so that FabSys can name it
+    if (failed.length && asleepNow && failed.every(c => /doesn't remove any material/.test(c.message || ""))
       && created.every(c => peet.apply({ op: "suppress", feature: c.name, on: true, configurations: "all" }).ok)) {
       return { ok: true, names: created.map(c => c.name), warning: `it can't be built at these sizes (${failed[0].message}), as in SolidWorks, where it is suppressed` };
     }
@@ -2256,6 +2257,18 @@ function importPart(doc, dir) {
     const left = members.filter(n => rowOf(n) ? !/^imported/.test(rowOf(n).result) : !SKETCH.test((byName.get(n) || {}).type || ""));
     if (left.length) return record(f, "failed", `what is in it was not all imported: ${left.join(", ")}`);
     made.set(f.name, members.flatMap(n => made.get(n) || []));
+    // FabSys suppresses and unsuppresses it by its own name ("T-Handle Cutout<1>"): the first feature in it
+    // that is not a sketch takes that name, so suppressing it takes the rest (made from it) along
+    const solid = members.find(n => !SKETCH.test((byName.get(n) || {}).type || "") && (made.get(n) || []).length);
+    if (solid) {
+      const peetName = made.get(solid)[0];
+      const renamed = peet.apply({ op: "rename", feature: peetName, name: f.name });
+      if (renamed.ok) {
+        made.set(solid, [f.name, ...made.get(solid).slice(1)]);
+        made.set(f.name, members.flatMap(n => made.get(n) || []));
+        return record(f, "imported", `as what is in it, imported where it is in the tree: ${members.join(", ")}; ${solid} is called ${f.name}`);
+      }
+    }
     record(f, "imported", `as what is in it, imported where it is in the tree: ${members.join(", ")}`);
   }
 
@@ -3062,6 +3075,14 @@ function importPart(doc, dir) {
     }
   }
 
+  /** A plane made; one suppressed in SolidWorks is suppressed too (where it is live nowhere), as FabSys names it. */
+  function asleepPlane(f, name, how) {
+    if (!f.suppressed) return record(f, "imported", how);
+    if (liveElsewhere(f.name)) return record(f, "imported", how + "; suppressed in this configuration");
+    peet.apply({ op: "suppress", feature: name, on: true, configurations: "all" });
+    return record(f, "imported and suppressed", how);
+  }
+
   function handleLive(f) {
     const v = values(f);
     if (STRUCTURE.test(f.type)) return;
@@ -3072,8 +3093,21 @@ function importPart(doc, dir) {
       const pf = planeFrameOf(f.planeTransform);
       planeFrames.set(f.name, pf);
       const standard = standardPlane(pf);
-      if (standard) { planes.set(f.name, standard); return; }
-      if (f.suppressed) return record(f, "suppressed");
+      if (standard) {
+        // Sketches on it go on the standard plane, as before; the plane is made too, under its own name, as a
+        // mate end (FabSys mates to "Gland Plate Mid Plane Y")
+        planes.set(f.name, standard);
+        // (SolidWorks' own three are PeetCAD's standard planes, under other names)
+        if (/^(Front|Top|Right) Plane$/.test(f.name)) return;
+        if (/^(front|top|right)$/i.test(f.name.trim())) return record(f, "not supported", `a plane called ${f.name} is PeetCAD's standard plane of that name`);
+        const name = f.name.trim();
+        const made = peet.apply({ op: "plane", from: standard, distance: 0, name });
+        if (!made.ok) return record(f, "failed", made.error);
+        const where = probe(name);
+        if (where && samePlane(where, pf)) return asleepPlane(f, name, `on the ${standard} plane`);
+        peet.apply({ op: "delete", feature: name });
+        return record(f, "failed", "the plane did not come out where SolidWorks has it");
+      }
       // A plane square to an axis is an offset of a standard plane. It is where SolidWorks has it, but it
       // no longer follows what it was defined from.
       const axis = ["x", "y", "z"].find(k => Math.abs(Math.abs(dot(pf.n, AXES[k])) - 1) < 1e-9);
@@ -3087,7 +3121,7 @@ function importPart(doc, dir) {
         const tried = peet.apply(op);
         if (!tried.ok) return record(f, "failed", tried.error);
         const where = probe(name);
-        if (where && samePlane(where, pf)) { planes.set(f.name, name); return record(f, "imported", "as a fixed offset plane"); }
+        if (where && samePlane(where, pf)) { planes.set(f.name, name); return asleepPlane(f, name, "as a fixed offset plane"); }
         peet.apply({ op: "delete", feature: name });
       }
       return record(f, "failed", "the plane did not come out where SolidWorks has it");
@@ -4297,6 +4331,8 @@ function importPart(doc, dir) {
   report.difference = { volume: volumeOff, box_mm: boxOff, flat_mm: flatOff };
   const left = report.features.filter(x => x.result === "not supported" || x.result === "failed");
   report.failures = (peet.ask({ op: "status" }).failures || []).map(x => `${x.name}: ${x.message}`);
+  // SolidWorks' own Front, Top and Right Plane, as SolidWorks orients them: FabSys mates to them by name
+  peet.apply({ op: "solidworks_planes" });
   report.verdict =
     bodies.length === 0 ? "nothing built"
       : volumeOff !== null && volumeOff < 1e-5 && boxOff < 1e-3 && (flatOff === null || flatOff < 1e-2) ? (left.length ? "matches, with features left out" : "matches")

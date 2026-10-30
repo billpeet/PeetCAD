@@ -308,7 +308,7 @@ are in `C:\Users\marti\source\peetcad-imports`.
 | P3 | **No user names for faces and edges.** Faces are named by the feature that made them. FabSys mates and sketches by name. | 97 parts carry 324 named faces and edges | Done (PR #13): `name_face`, `name_edge`, `{"name": ...}` as a selector. Checked on Access Plate 1 with its five SolidWorks names: they survive a change of length and a cut through the named face, and work as a sketch plane and as mate ends. Not yet tried: a named hole (the Door's hinge holes) or a named edge |
 | P4 | **Addressing by SolidWorks names.** Done (round 3): every sketch and feature dimension has an address `NAME@FEATURE`, as SolidWorks has (`Width@Sketch1`, `D1@LPattern2`; a feature's values are `d1`, `d2`, … or their field names unless named); expressions read them, `set` sets one by its address (per configuration too), `name_dimension` renames one and `dimensions` lists them. The importer gives every dimension SolidWorks' own name. Of the 70 addresses the FabSys scripts set on template parts, 60 exist in the imported parts. **Left:** global variables with spaces in their names become identifiers (`Base Height` is `Base_Height`). | About 5,100 dimensions | Done |
 | P5 | **Sketch text.** Done: a sketch takes `text` (a string, a height, a position and an angle), drawn from the font's glyphs as closed profiles a cut or extrusion can use, and `set_text` changes it as FabSys's `SetSketchText` does. **Left:** the export does not say which font, so the default is used | `SetSketchText`; features `Etch L`, `Etch R`, `EtchRodGL`; A3 Geartray and Tophat CB Covers match with their text cut | Done |
-| P6 | **Smart components and library features.** No equivalent. FabSys applies a smart feature about once per inserted component. | 43 parts hold smart components, 7 hold library features | Decide |
+| P6 | **Smart components and library features.** Decided: as SolidWorks has them. A part's `smart_feature` (a sketch of the part and how deep to cut) makes it a smart component; `apply_smart_features` in an assembly makes each in the part whose face it is given, as `Smart-Feature1<HingeMale-1>`: a sketch on that face converted in context from the component's, so it follows the component, and a cut. The export has no definition of them (SolidWorks keeps a smart component's library features as documents inside the part, `SmartComp/SC_LIB_FEAT_n`, which its API does not give the exporter): they were decoded from the template files, and `tools/sw-import/smart.js` gives the library's 44 smart parts their 69 smart features (a gland plate's cut-out follows its outline). Library features inserted in parts keep their name on their first solid feature (`T-Handle Cutout<1>`), which FabSys suppresses. **Left:** the smart features' own equations (Gland Plate's hole pattern counts from its size) and their components (none in the library); SolidWorks' order of references is not known, so a smart feature goes on the given face it lies against | 43 parts hold smart components, 7 hold library features | Done |
 
 ### Sheet metal features
 
@@ -668,13 +668,22 @@ Not yet examined in detail: `ISolidWorksManager` has about 40 methods, and each 
 
 | | Gap | Mark |
 |---|---|---|
-| F1 | `ApplySmartFeatures` (see P6) | Decide |
+| F1 | `ApplySmartFeatures` (see P6): `apply_smart_features` | Done in `peet`; FabSys integration still to do |
 | F2 | `SetSketchText` (see P5) | Gap |
 | F3 | `MarkSubAssemblyFlexible` (see A9) | Decide |
 | F4 | `AddMate` with planes and sub-assembly parts (see A1, A2) | Done in `peet`; FabSys integration still to do |
 | F5 | `CreateSketch`, `CreateLine`, `CreateDimension`, `AddConstraint`, `InsertPlane` in an assembly: sketching against a component's named face from the assembly | Check |
 | F6 | `RunMacro` | Decide |
 | F7 | The rest of the interface, method by method | Check |
+
+**The template library** (30 October 2026): every template as a `.peet` file of its name in one folder, assemblies
+linking their parts and sub-assemblies by relative paths with SolidWorks' instance names, every part and assembly
+with SolidWorks' Front, Top and Right Plane, the assemblies' own reference planes, and the smart parts' smart
+features (`import-asm.js --link`, `smart.js`; see `tools/sw-import/README.md`). Checked with FabSys's own template
+validation against manifests of the library (`manifests.js`) on the six corpus jobs: every name the script uses
+exists but the Door's six interlocking flanges, which are suppressed in every configuration and whose edges the
+export does not have (the exporter would have to read them with the flanges unsuppressed). The script inserts seven
+templates that are not in Templates at all (`Hold Down Tabs Qty 4` and the six Lockwood brackets and locks).
 
 ## The templates themselves
 

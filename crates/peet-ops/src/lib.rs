@@ -63,6 +63,7 @@ mod query;
 pub mod select;
 mod session;
 pub mod sketch;
+mod smart;
 mod value;
 
 pub use assembly::{CompSel, ComponentChange, InsertSource, Placing, Point3};
@@ -89,6 +90,7 @@ pub use pattern::{
 };
 pub use session::{DocSel, SessionCommand, apply_session, apply_session_json};
 pub use sketch::{Draw, DrawItem, Ent, Measure, ProjectionSel, Relation};
+pub use smart::SmartOp;
 pub use value::{
     AxisSel, Bend, BoundSel, Configs, EdgeQuery, EdgeSel, End, FaceQuery, FaceSel, FeatureSel,
     GeomSel, HoleStandard, Input, PlaneSel, PointSel, Regions, RevolveAxis, Side, VertexQuery,
@@ -493,7 +495,8 @@ fn help() -> Map<String, Value> {
             }
         }
     }
-    for (whom, name, fields_text, what) in in_context::IN_CONTEXT_OPS {
+    for (whom, name, fields_text, what) in in_context::IN_CONTEXT_OPS.iter().chain(smart::SMART_OPS)
+    {
         ops.insert(
             (*name).to_owned(),
             json!({ "does": what, "fields": fields_text, "in": whom }),
@@ -900,6 +903,10 @@ fn run(host: &mut dyn Host, doc: &mut Document, op: &Op) -> Result<Done, String>
             done.in_context = Some((c, f, e));
             label
         }
+        Op::Smart(smart::SmartOp::Apply {
+            component,
+            references,
+        }) => smart::apply(doc, &mut model, &mut done.data, component, references)?,
         Op::InContext(in_context::InContextOp::List { component }) => {
             done.data = in_context::list(doc, component.as_deref())?;
             return Ok(done);

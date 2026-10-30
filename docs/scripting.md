@@ -396,10 +396,17 @@ with their defaults' types):
 `extrude`, `cut`, `revolve`, `cut_revolve`, `sweep`, `cut_sweep`, `loft`, `cut_loft`,
 `hole`, `fillet`, `chamfer`, `shell`, `draft`, `convert_to_sheet`, `plane`, `axis`, `point`, `coordinate_system`, `base_flange`,
 `edge_flange`, `sheet_cut`, `hem`, `sketched_bend`, `jog`, `miter_flange`, `corner`, `break_corner`,
-`unfold`, `fold`, `dimple`, `emboss`, `louver`, `linear_pattern`, `circular_pattern`, `mirror`.
+`unfold`, `fold`, `dimple`, `emboss`, `louver`, `linear_pattern`, `circular_pattern`, `mirror`,
+`smart_feature`.
 
 - `plane`: `from` + `distance` (offset), `from` + `about` + `angle` (angled), or `a` + `b`
   (halfway between).
+- `smart_feature`: `sketch`, `reference` (default 0), `end` (`sheet`, `blind`,
+  `through_all`), `depth`, `reverse`. Makes the part a smart component (SolidWorks'): the
+  sketch, drawn where the face of the part it is placed against will be, is a cut that
+  `apply_smart_features` makes in that part in an assembly: on the face given that it
+  lies against (parallel to its sketch, nearest its plane, then nearest it in the face),
+  or failing one parallel, on reference number `reference`. It changes nothing in this part.
 - `extrude` and `cut` take `draft`: degrees the walls lean from the direction of
   extrusion, from the sketch plane, so that what is added or removed narrows away from the
   sketch (`draft_outward`: widens). Not with `mid_plane`. A `cut` with `flip_side`
@@ -764,6 +771,7 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 | `external_references` | `component` (in an assembly: a component, or a path to a part or sub-assembly inside one; left out: every part, at any depth): `references`, each with `component` (its path, as names joined by ` / `; `path` too below the top level), `feature`, `use` (`entity`, `sketch_plane`, `plane`, `up_to`, ...: what follows), `sketch` and `entity` for an entity, `context` (the assembly's file it was made in), `made_in` (the instance), `follows` (the path of the component it follows; `on_assembly`: the context's own plane or origin), `what` (`face`, `edge`, `vertex`, `plane`, `origin`, `sketch_entity`), `geometry` (`point`, `line`, `circle`, `arc`, `plane`: how it is held), `at` (where, in the part's coordinates), `status` (`in_context`, `out_of_context`, `locked`, `broken` (a plane), `dangling` with `why`). A part inside a sub-assembly made in that sub-assembly is `in_context` as the sub-assembly's rebuild found it. In a part: its own references, `out_of_context`, `locked` or `broken` |
 | `lock_references` | `component` (in an assembly: a component or a path to a part in a sub-assembly; left out: every part with references), `feature` (left out: all of the part's), `on` (default true; `false` unlocks): SolidWorks' Lock: kept where they are in their context too. The reply's `changed` |
 | `break_references` | `component`, `feature` as for `lock_references`: SolidWorks' Break: each followed entity becomes plain fixed sketch geometry where it is, and each followed plane stays where it is for good (`broken`). The reply's `changed` |
+| `apply_smart_features` | `component` (the smart component: a name, id or path to one in a sub-assembly), `references` (the faces its smart features go on, in order: mate ends, `{"component", "face"}`, a path for a part in a sub-assembly). SolidWorks' smart components, FabSys's `ApplySmartFeatures`: each `smart_feature` of the component's part becomes, in the part whose face it is given, a sketch on the face whose curves are the smart sketch's converted in context (they follow the component; see in-context references) and a cut of it (`sheet_cut` in sheet metal, else a cut `up to next`, `blind` or `through all`), named as SolidWorks names them, `Smart-Feature1<HingeMale-1>` (numbered on in each part). A linked part is written (at any depth). The reply's `applied` (each with `part`, `feature`, `sketch`, `smart_feature`, `reference`, `entities`) and `written` |
 | `dimensions` on an assembly | the assembly's own values (mates' `D1@MATE`, reference dimensions' `RD1@Annotations`), its `equations` (`target`, `expression`, `suppresses`, `status`, `message`; those of the active configuration, then those only others have with `expression` null; `configurations` with each one's expression in every configuration where it differs) and `references`; with `component`, that component's part's dimensions and parameters by their address from the assembly (`equation`: set by one); with `name`, the value at any address |
 | `rename`, `suppress`, `delete` | `mate` in place of `feature`. `suppress` takes `configurations` (of the assembly; default the active one) |
 | `mates` | every mate (`id`, `name`, `type`, `a`, `b`, `distance` or `angle`, `flip`, `align` if one was given, `flip_dimension`, `status`, `message`) and the `freedom` left |
@@ -878,7 +886,7 @@ component's flat face (`in_context` with `feature`), and a sketch can follow the
 assembly's own planes and origin.
 Anywhere else (the part on its own, another assembly, another instance of the part) the
 reference is `out_of_context` and keeps its last values. A locked reference keeps them in
-its context too; a broken one is plain fixed geometry. A linked part changed this way is
+its context too; a broken one is plain fixed geometry. A linked part changed this way (at any depth: inside a sub-assembly, the part's own file if it is linked, else the nearest linked sub-assembly's) is
 written when the context assembly is saved (the reply's `parts_written`); saving the
 assembly under another name keeps it the context.
 
