@@ -86,6 +86,39 @@ SolidWorks had it.
 manifest of each template, so that FabSys's own template validation (`FABSYS_CORPUS_MANIFESTS`) checks every name
 a script uses against the library.
 
+## A FabSys job against SolidWorks' output for it
+
+```
+node tools/sw-import/compare-job.js <SolidWorks exports folder | dry run report.json> <PeetCAD job folder>
+     [--out report.json] [--peet <peet>] [--sw-root <name>] [--peet-root <name>] [--sw-job <n>] [--peet-job <n>]
+     [--templates-exports <folder>] [--edited <list.txt>] [--tolerance <mm>] [--no-parts]
+node tools/sw-import/test-compare-job.js [--peet <peet>]
+```
+
+Compares what FabSys built for a job in PeetCAD (FabSys.Run's `--out` folder: the root `… Enclosure Assembly.peet`
+and the parts and sub-assemblies beside it) with what it built in SolidWorks: exports (`tools/sw-export`, with
+`--step` and `--dxf`) of the job's root assembly and every part and sub-assembly in its folder. Components are
+matched by their path of instance names with each side's job number taken out (`21455-2 MS2 Floor-1` and
+`21445-2 MS2 Floor-1` are one), and paired by file and position where they are numbered differently. For each
+component it reports how far apart the two placements are (as `import-asm.js` measures; a sub-assembly is judged by
+its parts), its configuration, suppression and visibility, PeetCAD's status for it, and its part: volume and box
+(SolidWorks' STEP of the configuration, measured by PeetCAD), flat size (its flat DXF, or its unfolded flat-pattern
+configuration), features suppressed differently, dimensions with the same address that differ, and features that
+made geometry on one side only (where a smart component's cut went). Mates of the root and of each sub-assembly
+both have, by FabSys's names (`Coincident_<component>_<face>_…`), present on both and solving alike (a mate of a
+suppressed component counts as suppressed, and only the active configuration's state is used: an export's mates
+of other configurations are stale). The whole assembly's volume against its STEP and box against SolidWorks'
+extreme points. A verdict per component and for the job.
+
+In place of exports it takes a FabSys.Run report of a dry run (`--backend dryrun --report x.json`, on a FabSys.Run
+that writes the dry run's `tree`): the tree the script asks for, in the names SolidWorks would give, with template
+assemblies' own components filled in from their exports (`--templates-exports`) as FabSys copies them. A dry run
+has no geometry and doesn't evaluate templates' equations, so a component an equation suppresses is reported, not
+counted.
+
+A job folder on the NAS is as the designers left it, not as FabSys did: `--edited` takes the files changed after
+the run, and marks their components.
+
 ## How it works
 
 It applies one operation at a time, one `peet` call each, because the next operation
