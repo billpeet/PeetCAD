@@ -33,10 +33,12 @@ A file becomes an assembly by its script starting with `{"op": "new", "assembly"
   documents).
 - `sample`: a sample part.
 
-Components are named after their part, `Bracket-1`, `Bracket-2`, with the lowest number
-free; a part inserted from a file is called after the file, as SolidWorks names it (`J123
-AL3 Door.peet` gives `J123 AL3 Door-1`, whatever the part was called where it was made).
-Pass `name` to choose.
+Components are named after their part, `Bracket-1`, `Bracket-2`, numbered as SolidWorks
+numbers them: one past the highest number that part's components have had in the
+assembly since it was opened, so a deleted or replaced component's number is not given
+again (FabSys's names depend on it). A part inserted from a file is called after the
+file (`J123 AL3 Door.peet` gives `J123 AL3 Door-1`, whatever the part was called where
+it was made). Pass `name` to choose.
 The reply's `component` has its name, where it is, and `min` and `max`: the box it
 occupies in the assembly. Check those against where it should be.
 
@@ -405,7 +407,7 @@ known only by where it is in the assembly.
 
 The shelf's side goes to Y = -400 (400 below SolidWorks' Top Plane, along -Y) with its
 underside 25 in front of the Front Plane (Z = 25); the lid lands on the floor, the first
-face the ray meets.
+face seen looking down through (50, 30).
 
 - **`plane` works in an assembly** (offset, angled, mid plane, from the assembly's
   planes), as do `features`, `edit`, `rename` and `delete` on what it makes. A mate end
@@ -418,8 +420,9 @@ face the ray meets.
   of that name where there is one, else PeetCAD's own; `front`, `top`, `right` are
   always PeetCAD's. It skips planes the document already has.
 - **`{"face": {"ray": {"from": [x, y, z], "direction": [x, y, z]}}}` with no
-  `component`** is the first face of any component the ray meets, in the assembly's
-  coordinates (SolidWorks' select by ray); the reply's end says which component. Hidden
+  `component`** is the first face of any component met looking along `direction`
+  through `from`, in the assembly's coordinates (SolidWorks' select by ray: faces before
+  `from` count too); the reply's end says which component. Hidden
   and suppressed components are passed through. With a `component`, the ray is in that
   part's coordinates (`peet skills selectors`).
 
@@ -823,12 +826,32 @@ component of a part removes the part from the assembly.
   job's copy of its file. The component keeps its mates (its new part's faces are
   found as the old part's were, so a copy of the same part fits exactly) and shows the
   new part's configuration of the same name. A component named after its part
-  (`Door-2`) is renamed after the new one (`J1 Door-1`), and the assembly's equations
-  and parameters that read it (`"Width@Sketch1@Door-2"`) read the new name; one given
-  its own name keeps it. Without `link` the part is copied into the assembly.
+  (`Door-2`) is renamed after the new one with its number (`J1 Door-2`; the next one if
+  that name is taken), and the assembly's equations and parameters that read it
+  (`"Width@Sketch1@Door-2"`) read the new name; one given its own name keeps it.
+  Without `link` the part is copied into the assembly.
   A flexible sub-assembly replaced by a copy of its file keeps where what moves in it
   is (a hinge's leaf stays as it was).
+- **Replacing a pattern's original replaces its copies too**, as in SolidWorks, where
+  they are instances of the original's file: each keeps its number (`Gear tray
+  bracket-13` becomes `J1 MS2 Gear tray bracket 1-13`). Don't replace the copies
+  yourself; `replace` on a copy fails.
 - Only `path` can be linked; `"absolute": true` keeps the link a full path.
+
+```jsonl
+{"op": "new", "assembly": true}
+{"op": "insert", "sample": "bracket"}
+{"op": "insert", "sample": "bracket", "at": [0, 100, 0]}
+{"op": "delete", "component": "Bracket-2"}
+{"op": "insert", "sample": "bracket", "at": [0, 200, 0]}
+{"op": "component_pattern", "components": ["Bracket-1"], "type": "linear", "direction": "x", "spacing": 150, "count": 3}
+{"op": "replace", "component": "Bracket-1", "sample": "housing"}
+{"op": "components"}
+```
+
+The third bracket is `Bracket-3`, not `-2`: `Bracket-2` was deleted. The pattern's
+copies, `Bracket-4` and `-5`, become `Housing-4` and `Housing-5` with their original,
+`Housing-1`.
 
 ## Showing, hiding, colouring, exploding
 

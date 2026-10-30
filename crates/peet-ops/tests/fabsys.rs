@@ -122,23 +122,38 @@ fn components_are_named_after_their_files_and_follow_replaced_files() {
     );
 
     // Pointed at the job's copy (FabSys's ReplaceComponents2): renamed after the copy,
-    // its mates and the equation kept, its configuration the copy's of the same name.
+    // keeping its number as SolidWorks does, its mates and the equation kept, its
+    // configuration the copy's of the same name.
     let r = ok(
         &mut doc,
         json!({"op": "replace", "component": "Door-2", "path": copy, "link": true}),
     );
-    assert_eq!(r["component"]["name"], "J1 AL3 Door-1", "{r}");
+    assert_eq!(r["component"]["name"], "J1 AL3 Door-2", "{r}");
     assert_eq!(r["component"]["configuration"], "LHS", "{r}");
     let mates = ok(&mut doc, json!({"op": "mates"}));
     assert_eq!(mates["mates"][0]["status"], "ok", "{mates}");
-    assert_eq!(mates["mates"][0]["b"]["component"], "J1 AL3 Door-1");
+    assert_eq!(mates["mates"][0]["b"]["component"], "J1 AL3 Door-2");
     let dims = ok(&mut doc, json!({"op": "dimensions"}));
     assert_eq!(
-        dims["equations"][0]["expression"], "\"Width@Sketch1@J1 AL3 Door-1\" - 20",
+        dims["equations"][0]["expression"], "\"Width@Sketch1@J1 AL3 Door-2\" - 20",
         "{dims}"
     );
     let all = ok(&mut doc, json!({"op": "components"}));
-    assert_eq!(component(&all, "J1 AL3 Door-1")["min"][2], 32.0, "{all}");
+    assert_eq!(component(&all, "J1 AL3 Door-2")["min"][2], 32.0, "{all}");
+
+    // A new instance is numbered one past the highest its file has had in the assembly,
+    // as SolidWorks numbers it: numbers of deleted and replaced components aren't given
+    // again (J1 AL3 Door-1 was deleted; Door-2 is now the copy).
+    let r = ok(
+        &mut doc,
+        json!({"op": "insert", "path": copy, "at": [0, 0, 300]}),
+    );
+    assert_eq!(r["component"]["name"], "J1 AL3 Door-3", "{r}");
+    let r = ok(
+        &mut doc,
+        json!({"op": "insert", "path": template, "at": [0, 0, 400]}),
+    );
+    assert_eq!(r["component"]["name"], "Door-3", "{r}");
     let parts = all["parts"].as_array().unwrap();
     let linked = parts.iter().find(|p| p["name"] == "J1 AL3 Door").unwrap();
     assert_eq!(linked["link_status"], "current", "{all}");
@@ -275,7 +290,7 @@ fn a_plane_named_as_a_standard_plane_is_the_standard_one_where_there_is_no_such_
 }
 
 #[test]
-fn a_ray_picks_the_first_face_it_meets() {
+fn a_ray_picks_the_face_seen_looking_along_it() {
     // In a part: a ray down onto a plate 6 thick meets its top.
     let mut part = Document::default();
     ok(
@@ -303,15 +318,29 @@ fn a_ray_picks_the_first_face_it_meets() {
         })
         .unwrap();
     assert_eq!(top["normal"], json!([0.0, 0.0, 1.0]), "{top}");
-    // Starting on a face, it meets that face; pointing away from the part, none.
+    // As SolidWorks' SelectByRay: the face seen looking along the direction through the
+    // point, so from below the part, looking down, it is still the top; a line that
+    // misses the part meets nothing.
     let r = ok(
         &mut part,
-        json!({"op": "measure", "a": {"face": {"ray": {"from": [30, 20, 0], "direction": [0, 0, -1]}}}}),
+        json!({"op": "name_face", "face": {"ray": {"from": [30, 20, -50], "direction": [0, 0, -1]}}, "name": "Seen"}),
     );
-    assert_eq!(r["area_mm2"], 2400.0);
+    assert_eq!(r["ok"], true);
+    let faces = ok(&mut part, json!({"op": "faces"}));
+    let seen = faces["faces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| {
+            f["names"]
+                .as_array()
+                .is_some_and(|n| n.contains(&json!("Seen")))
+        })
+        .unwrap();
+    assert_eq!(seen["normal"], json!([0.0, 0.0, 1.0]), "{seen}");
     let e = error(
         &mut part,
-        json!({"op": "measure", "a": {"face": {"ray": {"from": [30, 20, 10], "direction": [0, 0, 1]}}}}),
+        json!({"op": "measure", "a": {"face": {"ray": {"from": [100, 20, 10], "direction": [0, 0, 1]}}}}),
     );
     assert!(e.contains("meets no face"), "{e}");
 
@@ -341,6 +370,17 @@ fn a_ray_picks_the_first_face_it_meets() {
                "b": {"component": "Moving", "face": {"normal": [0, 0, -1]}}}),
     );
     assert_eq!(r["mate"]["a"]["component"], "High", "{r}");
+    ok(&mut doc, json!({"op": "delete", "mate": "Coincident1"}));
+    // Starting on Low's underside and pointing down, it still finds High above: FabSys's
+    // rays start on an enclosure's back, z = 0, point along -z and select its front, as
+    // SolidWorks did in job 21441-1 (the Floor's front flange, the doors' mullions).
+    let r = ok(
+        &mut doc,
+        json!({"op": "mate", "type": "coincident",
+               "a": {"face": {"ray": {"from": [x, y, 0], "direction": [0, 0, -1]}}},
+               "b": {"component": "Moving", "face": {"normal": [0, 0, -1]}}}),
+    );
+    assert_eq!(r["mate"]["a"]["component"], "High", "{r}");
     // Hidden, it is passed through.
     ok(
         &mut doc,
@@ -357,6 +397,46 @@ fn a_ray_picks_the_first_face_it_meets() {
     // The block's top face, 6 up: the moving one's bottom is on it.
     let all = ok(&mut doc, json!({"op": "components"}));
     assert_eq!(component(&all, "Moving")["min"][2], 6.0, "{all}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_patterns_copies_follow_their_replaced_original() {
+    let dir = temp("pattern");
+    let template = block(&dir, "Gear tray bracket.peet");
+    let copy = dir.join("J1 MS2 Gear tray bracket 1.peet");
+    std::fs::copy(&template, &copy).unwrap();
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(&mut doc, json!({"op": "insert", "path": template}));
+    ok(
+        &mut doc,
+        json!({"op": "component_pattern", "components": ["Gear tray bracket-1"], "type": "linear", "direction": "x", "spacing": 100, "count": 3}),
+    );
+    // A copy is its pattern's: it is replaced with its original.
+    let e = error(
+        &mut doc,
+        json!({"op": "replace", "component": "Gear tray bracket-3", "path": copy, "link": true}),
+    );
+    assert!(e.contains("pattern"), "{e}");
+    // FabSys's ReplaceComponents2 on the original: in SolidWorks the pattern's copies are
+    // then instances of the new file too, keeping their numbers (Gear Tray Assembly's
+    // Gear tray bracket-13 and -14 become the job's bracket-13 and -14).
+    let r = ok(
+        &mut doc,
+        json!({"op": "replace", "component": "Gear tray bracket-1", "path": copy, "link": true}),
+    );
+    assert_eq!(
+        r["component"]["name"], "J1 MS2 Gear tray bracket 1-1",
+        "{r}"
+    );
+    let all = ok(&mut doc, json!({"op": "components"}));
+    for (n, x) in [(1, 0.0), (2, 100.0), (3, 200.0)] {
+        let c = component(&all, &format!("J1 MS2 Gear tray bracket 1-{n}"));
+        assert_eq!(c["part"], "J1 MS2 Gear tray bracket 1", "{c}");
+        assert_eq!(c["min"][0], x, "{c}");
+    }
+    assert_eq!(all["parts"].as_array().unwrap().len(), 1, "{all}");
     let _ = std::fs::remove_dir_all(dir);
 }
 

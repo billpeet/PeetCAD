@@ -261,12 +261,12 @@ pub struct FaceQuery {
     pub body: Option<usize>,
     /// Its number in the body, from the `faces` query. Only valid until the part changes.
     pub index: Option<u32>,
-    /// The first face a ray from a point along a direction meets (SolidWorks' select by
-    /// ray, as FabSys picks faces).
+    /// The first face met looking along a direction through a point (SolidWorks' select by
+    /// ray, as FabSys picks faces): faces before the point count too.
     pub ray: Option<Ray>,
 }
 
-/// A ray: from a point, along a direction.
+/// A ray: through a point, along a direction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ray {
     pub from: [f64; 3],

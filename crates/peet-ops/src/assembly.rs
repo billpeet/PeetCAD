@@ -1199,6 +1199,8 @@ pub(crate) fn change(
         .assembly_mut()
         .ok_or_else(|| "The document is not an assembly.".to_owned())?;
     let gone = || "The component no longer exists.".to_owned();
+    // Components a replace renamed, before and after.
+    let mut renamed: Vec<(String, String)> = Vec::new();
     let label = match change {
         ComponentChange::Suppress(_)
         | ComponentChange::Fix(_)
@@ -1244,13 +1246,22 @@ pub(crate) fn change(
                 (part, None) => assembly.define(part),
                 (part, Some(link)) => assembly.define_linked(part, link),
             };
+            // The copies a pattern made of it go with it.
+            let copies: Vec<(CompId, String)> = assembly
+                .patterns()
+                .flat_map(|p| p.instances.iter().filter(|i| i.seed == id))
+                .map(|i| (i.component, assembly.name_of(i.component).to_owned()))
+                .collect();
             if !assembly.replace(id, definition) {
                 return Err(gone());
             }
-            // Renamed after its new part: what the equations read of it follows.
-            let now = assembly.name_of(id).to_owned();
-            if now != was {
-                assembly.rename_component_references(&was, &now);
+            // Renamed after their new part: what the equations read of them follows.
+            for (c, before) in std::iter::once((id, was.clone())).chain(copies) {
+                let now = assembly.name_of(c).to_owned();
+                if now != before {
+                    assembly.rename_component_references(&before, &now);
+                    renamed.push((before, now));
+                }
             }
             format!("Replace {was}")
         }
@@ -1260,27 +1271,18 @@ pub(crate) fn change(
             format!("Delete {was}")
         }
     };
-    // Renamed by a replace: the assembly's parameters read it by name too.
-    let replaced = matches!(
-        change,
-        ComponentChange::Replace(_) | ComponentChange::ReplaceLinked(..)
-    );
-    let now = model
-        .assembly()
-        .and_then(|a| a.component(id))
-        .map(|c| c.name.clone())
-        .filter(|_| replaced);
-    if let Some(now) = now.filter(|now| *now != was) {
-        let mut changed = false;
+    // Renamed by a replace: the assembly's parameters read them by name too.
+    let mut changed = false;
+    for (before, now) in &renamed {
         for p in &mut model.parameters.entries {
-            if let Some(x) = peet_model::equations::rename_component(&p.expression, &was, &now) {
+            if let Some(x) = peet_model::equations::rename_component(&p.expression, before, now) {
                 p.expression = x;
                 changed = true;
             }
         }
-        if changed {
-            model.parameters.evaluate();
-        }
+    }
+    if changed {
+        model.parameters.evaluate();
     }
     Ok(label)
 }
