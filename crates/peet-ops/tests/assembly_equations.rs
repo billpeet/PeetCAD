@@ -89,6 +89,44 @@ fn plinth(link: bool) -> (Document, std::path::PathBuf) {
     (doc, dir)
 }
 
+/// A linked part an equation of the assembly sizes is written with the assembly, as
+/// SolidWorks writes the dimension into the part (FabSys's Plinth PFC Assembly: its pipes as
+/// long as RD2 measures, in the pipe's own file).
+#[test]
+fn a_linked_part_an_equation_sizes_is_written_with_the_assembly() {
+    let (mut doc, dir) = plinth(true);
+    ok(
+        &mut doc,
+        json!({"op": "reference_dimension",
+            "a": {"component": "Base-1", "face": {"normal": [0, 0, 1]}},
+            "b": {"component": "Top-1", "face": {"normal": [0, 0, -1]}}}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "set", "name": "D1@Extrude1@Pipe<1>.Part", "value": "\"RD1@Annotations\""}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "place", "component": "Top-1", "at": [0, 0, 405]}),
+    );
+    let asm = dir.join("Plinth.peet").to_string_lossy().into_owned();
+    let saved = ok(&mut doc, json!({"op": "save", "path": asm}));
+    assert!(
+        saved["parts_written"].to_string().contains("pipe.peet"),
+        "{saved}"
+    );
+    let pipe = dir.join("pipe.peet");
+    let opened = peet_io::document::open(&std::fs::read(pipe).unwrap())
+        .unwrap()
+        .model;
+    let mut part = Document::from_model(opened, None);
+    let depth = ok(
+        &mut part,
+        json!({"op": "dimensions", "name": "D1@Extrude1"}),
+    );
+    assert_eq!(depth["dimensions"][0]["value"], 400.0, "{depth}");
+}
+
 #[test]
 fn a_pipe_is_as_long_as_the_gap_a_reference_dimension_measures() {
     let (mut doc, _) = plinth(false);

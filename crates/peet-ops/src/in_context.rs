@@ -844,6 +844,19 @@ pub(crate) fn write_moved_links(doc: &Document) -> Result<Vec<PathBuf>, String> 
     }
     let mut files = Vec::new();
     changed(&doc.model, &here, &mut files);
+    // So are the linked parts the assembly's equations size, as SolidWorks writes the
+    // dimension into the part (Plinth PFC Assembly's pipes, as long as RD2 measures)
+    if let Some(assembly) = doc.model.assembly() {
+        for e in assembly.equations() {
+            if let peet_model::equations::EquationTarget::Dimension { component, .. } = &e.target
+                && let Some(d) = assembly.definition_of(*component)
+                && let Some(link) = &d.link
+                && !files.iter().any(|(l, _)| l.path == link.path)
+            {
+                files.push((link.clone(), d.model.clone()));
+            }
+        }
+    }
     let mut out = Vec::new();
     for (link, model) in files {
         crate::links::unavailable()?;
