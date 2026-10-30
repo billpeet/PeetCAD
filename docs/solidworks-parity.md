@@ -685,6 +685,31 @@ exists but the Door's six interlocking flanges, which are suppressed in every co
 export does not have (the exporter would have to read them with the flanges unsuppressed). The script inserts seven
 templates that are not in Templates at all (`Hold Down Tabs Qty 4` and the six Lockwood brackets and locks).
 
+**Three SolidWorks behaviours FabSys's names and picks rely on** (30 October 2026, from SolidWorks' own output of
+jobs 21441-1 and 21387-2, read from the files' feature and component names):
+
+- **Select by ray** (`Extension.SelectByRay`, which FabSys calls with a radius of 0.1 m and type FACE) selects the
+  face seen looking along the direction through the point: the first face on the whole line, faces before the point
+  included. Every ray in the production script starts on z = 0 (the enclosure's back) and points along -z, and
+  SolidWorks put every cut they pick in a part at the front: the Floor's and Roof's front flanges (mullions, stay
+  brackets, clinch studs), the mullions and Wall Right (door hinges), never a back wall. A ray that starts at the
+  point and goes on (PeetCAD's ray until now) picks the back walls, or Wall Left's bend where the ray runs along it.
+  SolidWorks' documentation says the radius is ignored for faces, and the picks need none. `{"face": {"ray": ...}}`
+  now selects as SolidWorks does; FabSys passes the same point and direction as before.
+- **Instance numbers** are one past the highest the file has had in the assembly: a deleted component's number is
+  not given again. The job folder `Metroid\Curtis\21441-1` holds a second run into an assembly whose first run's
+  components were deleted (`Stay Bracket-4` to `-6`, `Clinch Stud-5` to `-8`, every single component `-2`); the
+  job's original output, `CNFiTech\...\21441-1`, numbers from `-1` as PeetCAD does. Replacing a component's file
+  keeps its number (`Gear tray bracket-13` becomes `21441-1 316SS2 Gear tray bracket 1 Qty 3-13`). PeetCAD now does
+  both; it remembers numbers while the assembly is open, not in the file (whether SolidWorks keeps them in the file
+  is not known).
+- **A pattern's copies follow a replaced original**: after ReplaceComponents2 on a pattern's seed, the copies are
+  instances of the new file (FabSys relies on it: it skips components already named for the job). `replace` does the
+  same. PeetCAD has no mirrored components.
+- Not yet followed: SolidWorks' target part has one `Smart-Feature<n><component>` for each application (the Floor's
+  `Smart-Feature7<21441-1 AL6 Gland Plate 1-2>` for a gland plate, whose part has two smart sketches); PeetCAD names
+  each smart feature it makes, so its numbers run ahead of SolidWorks' after the first smart component with two.
+
 ## The templates themselves
 
 Found while reading the manifests; worth fixing whichever CAD they end up in.

@@ -101,15 +101,17 @@ fn ray_triangle(from: DVec3, dir: DVec3, [a, b, c]: [DVec3; 3]) -> Option<f64> {
     Some(e2.dot(q) / det)
 }
 
-/// The first face of a mesh a ray meets, at or after its start: the face and how far
-/// along the ray. `dir` is of unit length; a ray starting on a face meets that face.
+/// The first face of a mesh met along the line through `from` in the direction `dir` (of
+/// unit length), coming from the line's far end behind `from`: the face and how far along
+/// `dir` from `from` it is (negative before it). This is SolidWorks' SelectByRay, which
+/// selects what is seen looking along the direction through the point: in FabSys's jobs a
+/// ray from z = 0 along -z selects faces of the enclosure's front at z = 598.
 pub(crate) fn ray_hit(mesh: &SolidMesh, from: DVec3, dir: DVec3) -> Option<(FaceId, f64)> {
     let mut best: Option<(FaceId, f64)> = None;
     for m in &mesh.faces {
         for t in &m.triangles {
             let corners = t.map(|i| m.positions[i as usize]);
             if let Some(d) = ray_triangle(from, dir, corners)
-                && d >= -ON * 10.0
                 && best.is_none_or(|(_, b)| d < b)
             {
                 best = Some((m.face, d));
@@ -119,8 +121,8 @@ pub(crate) fn ray_hit(mesh: &SolidMesh, from: DVec3, dir: DVec3) -> Option<(Face
     best
 }
 
-/// The first face of the part's bodies (of `body` only, if given) a ray meets:
-/// `(body, face, where)`.
+/// The first face of the part's bodies (of `body` only, if given) a ray meets, as
+/// [`ray_hit`] meets them: `(body, face, where)`.
 fn ray_face(
     doc: &Document,
     ray: &crate::value::Ray,
@@ -142,15 +144,15 @@ fn ray_face(
     }
     best.map(|(b, f, d)| (b, f, from + dir * d)).ok_or_else(|| {
         format!(
-            "A ray from {} along {} meets no face of the part.",
+            "The line through {} along {} meets no face of the part.",
             point3_out(from, units),
             crate::args::direction_out(dir)
         )
     })
 }
 
-/// The first face of the assembly's components a ray meets, in the assembly's
-/// coordinates, as SolidWorks selects by ray in an assembly: the face as a mate end, on
+/// The first face of the assembly's components a ray meets (as [`ray_hit`] meets them), in
+/// the assembly's coordinates, as SolidWorks selects by ray in an assembly: the face as a mate end, on
 /// the component (through sub-assemblies, down to the part) it belongs to. Hidden and
 /// suppressed components are not met.
 pub(crate) fn assembly_ray(
@@ -183,7 +185,7 @@ pub(crate) fn assembly_ray(
     }
     let (i, f, d) = best.ok_or_else(|| {
         format!(
-            "A ray from {} along {} meets no face of a component that is shown.",
+            "The line through {} along {} meets no face of a component that is shown.",
             point3_out(from, units),
             crate::args::direction_out(dir)
         )

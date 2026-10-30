@@ -653,6 +653,42 @@ pub struct Assembly {
     /// The display states (model schema 12; see [`crate::DisplayState`]).
     #[serde(default)]
     pub(crate) display: crate::DisplayStates,
+    /// The highest instance number each file's components have had while the assembly is
+    /// open, so a number is not used again after its component is deleted or replaced.
+    #[serde(skip)]
+    instance_numbers: InstanceNumbers,
+}
+
+/// The highest instance number (`Bracket-3`: 3) components of each part (by its name)
+/// have had. SolidWorks numbers a new instance one past the highest its file has had in
+/// the assembly: in a job FabSys ran twice into one assembly, deleting the first run's
+/// components in between, the second run's Stay Brackets are `-4` to `-6`. Not saved (it
+/// is not known whether SolidWorks keeps it in the file): on opening, the components there
+/// are the history. Not part of what the assembly is: two assemblies that differ only here
+/// are equal.
+#[derive(Clone, Debug, Default)]
+struct InstanceNumbers(std::collections::BTreeMap<String, u32>);
+
+impl PartialEq for InstanceNumbers {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl InstanceNumbers {
+    fn highest(&self, base: &str) -> u32 {
+        self.0.get(base).copied().unwrap_or(0)
+    }
+
+    fn note(&mut self, base: &str, n: u32) {
+        let e = self.0.entry(base.to_owned()).or_insert(0);
+        *e = (*e).max(n);
+    }
+}
+
+/// The instance number of a component named `<base>-<n>`.
+fn instance_number(name: &str, base: &str) -> Option<u32> {
+    name.strip_prefix(base)?.strip_prefix('-')?.parse().ok()
 }
 
 /// The assembly layout in schemas 8 through 10, with their feature layouts in definitions.
@@ -745,6 +781,7 @@ impl From<AssemblyV11> for Assembly {
             cuts: Vec::new(),
             next_cut: 0,
             display: Default::default(),
+            instance_numbers: Default::default(),
         }
     }
 }
@@ -889,6 +926,7 @@ impl From<AssemblyV12NoDisplayStates> for Assembly {
             cuts: a.cuts,
             next_cut: a.next_cut,
             display: Default::default(),
+            instance_numbers: Default::default(),
         }
     }
 }
@@ -953,6 +991,7 @@ impl<F: Into<crate::Feature>> From<AssemblyLegacy<F>> for Assembly {
             cuts: Vec::new(),
             next_cut: 0,
             display: Default::default(),
+            instance_numbers: Default::default(),
         }
     }
 }
@@ -1146,15 +1185,39 @@ impl Assembly {
         }
     }
 
-    /// A name no component has: the definition's name and the first free number.
+    /// A name no component has, as SolidWorks names a new instance: the definition's name
+    /// and one past the highest number its components have had (`Bracket-4` after
+    /// `Bracket-1` to `-3`, even when some of them have been deleted or replaced since).
     fn component_name(&self, definition: DefId) -> String {
         let base = self
             .definition(definition)
             .map_or("Component", Definition::name);
-        (1..)
+        let highest = self
+            .components
+            .iter()
+            .filter_map(|c| instance_number(&c.name, base))
+            .max()
+            .unwrap_or(0)
+            .max(self.instance_numbers.highest(base));
+        (highest + 1..)
             .map(|n| format!("{base}-{n}"))
             .find(|name| !self.components.iter().any(|c| c.name == *name))
             .unwrap_or_default()
+    }
+
+    /// Remembers the instance number of a component named after its part that is about to
+    /// go (deleted, or replaced by another part), so it is not given again. Those still
+    /// there are counted by their names.
+    fn note_instance(&mut self, id: CompId) {
+        let Some(c) = self.component(id) else {
+            return;
+        };
+        let Some(base) = self.definition(c.definition).map(|d| d.name().to_owned()) else {
+            return;
+        };
+        if let Some(n) = instance_number(&c.name, &base) {
+            self.instance_numbers.note(&base, n);
+        }
     }
 
     /// Places an instance of a definition. The first component of an assembly is fixed:
@@ -1386,6 +1449,7 @@ impl Assembly {
     /// the reference dimensions measured to it. Nothing else is tidied.
     fn remove_component(&mut self, id: CompId) -> Option<Component> {
         let index = self.components.iter().position(|c| c.id == id)?;
+        self.note_instance(id);
         let removed = self.components.remove(index);
         self.mates
             .retain(|m| !m.ends().any(|e| e.component() == Some(id)));
@@ -1566,23 +1630,63 @@ impl Assembly {
         self.varying.rewrite_equations(rename);
     }
 
-    /// Makes a component an instance of another definition, where it is.
+    /// Makes a component an instance of another definition, where it is. The copies a
+    /// pattern made of it go with it, as in SolidWorks, where they are instances of their
+    /// original's file: after `Gear tray bracket-1` is replaced by a copy of its file, its
+    /// pattern's `Gear tray bracket-13` and `-14` are instances of the copy too.
     pub fn replace(&mut self, id: CompId, definition: DefId) -> bool {
+        let copies: Vec<CompId> = self
+            .patterns
+            .iter()
+            .flat_map(|p| p.instances.iter().filter(|i| i.seed == id))
+            .map(|i| i.component)
+            .collect();
+        if !self.replace_one(id, definition) {
+            return false;
+        }
+        for copy in copies {
+            self.replace_one(copy, definition);
+        }
+        true
+    }
+
+    /// The name a component named after its part takes when its part is replaced: the new
+    /// part's name with the same number, as SolidWorks keeps it (`Door-2` becomes
+    /// `Door Long-2`), or the next number when another component has that name.
+    fn replacement_name(&self, id: CompId, definition: DefId) -> String {
+        let number = self.component(id).and_then(|c| {
+            let old = self.definition(c.definition)?;
+            instance_number(&c.name, old.name())
+        });
+        let base = self
+            .definition(definition)
+            .map_or("Component", Definition::name);
+        number
+            .map(|n| format!("{base}-{n}"))
+            .filter(|name| {
+                !self
+                    .components
+                    .iter()
+                    .any(|c| c.id != id && c.name == *name)
+            })
+            .unwrap_or_else(|| self.component_name(definition))
+    }
+
+    fn replace_one(&mut self, id: CompId, definition: DefId) -> bool {
         if self.definition(definition).is_none() {
             return false;
         }
         // A component named after its part (`Door-2`) is named after the new one
-        // (`Door Long-1`), as SolidWorks renames a component whose file is replaced.
+        // (`Door Long-2`), as SolidWorks renames a component whose file is replaced.
         let named_after_part = self.component(id).is_some_and(|c| {
             self.definition(c.definition).is_some_and(|d| {
-                c.name
-                    .strip_prefix(d.name())
-                    .and_then(|n| n.strip_prefix('-'))
-                    .is_some_and(|n| n.parse::<u32>().is_ok())
+                instance_number(&c.name, d.name()).is_some()
                     && d.name() != self.definition(definition).map_or("", Definition::name)
             })
         });
-        let renamed = named_after_part.then(|| self.component_name(definition));
+        let renamed = named_after_part.then(|| self.replacement_name(id, definition));
+        // The old file's number is not given again.
+        self.note_instance(id);
         // The configuration it shows is the new part's of the same name, if it has one,
         // as SolidWorks' replace matches configurations by name.
         let names: Vec<(crate::ConfigId, String)> = self
@@ -1635,6 +1739,7 @@ impl Assembly {
             .retain(|p| has(&old_model, &p.path) && has(&new_model, &p.path));
         c.configuration = c.configuration.and_then(same);
         self.varying.forget_part(id, same);
+        self.note_instance(id);
         self.prune();
         true
     }
@@ -1857,12 +1962,12 @@ mod tests {
         assert_eq!((a.uses(plate), a.uses(screw)), (1, 2));
         assert_eq!(a.definition_of(s2).unwrap().name(), "Screw");
 
-        // A removed component's number is free again; its definition goes with the last
-        // instance.
+        // A removed component's number is not given again, as SolidWorks numbers
+        // instances; its definition goes with the last instance.
         a.remove(s1).unwrap();
         assert_eq!(a.definitions().count(), 2);
         let s3 = a.insert(screw, at(30.0)).unwrap();
-        assert_eq!(a.name_of(s3), "Screw-1");
+        assert_eq!(a.name_of(s3), "Screw-3");
         assert!(s3 > s2, "ids are not reused");
         a.remove(s2);
         a.remove(s3);

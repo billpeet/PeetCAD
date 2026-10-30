@@ -55,12 +55,14 @@ given must match.
 
 ## A face by a ray, and SolidWorks' plane names
 
-- **`ray`** picks the first face a ray meets, starting at `from` and going along
-  `direction`: SolidWorks' select by ray, which FabSys uses to pick a face by a point in
-  front of it. A ray that starts on a face meets that face. Use it when you know where a
-  face is seen from, not a point on it. It fails, saying so, when the ray meets nothing.
-  In an assembly with no `component` it searches every component shown
-  (`peet skills assemblies`).
+- **`ray`** picks the face you would see looking along `direction` through the point
+  `from`: the first face on the whole line, coming from its far end, so faces before
+  `from` count too. This is SolidWorks' select by ray (`SelectByRay`), which FabSys uses:
+  its rays start on the enclosure's back plane, z = 0, and point along -z, yet select
+  the doors' mullions and the floor's front flange at z = 598. `from` only fixes the
+  line. Use it when you know where a face is seen from, not a point on it. It fails,
+  saying so, when the line meets nothing. In an assembly with no `component` it searches
+  every component shown (`peet skills assemblies`).
 - **`"Front Plane"`, `"Top Plane"`, `"Right Plane"`** (with ` Plane`) mean a reference
   plane of that name if the document has one, else PeetCAD's standard plane.
   `solidworks_planes` adds SolidWorks' three, oriented as SolidWorks has them, to a part
