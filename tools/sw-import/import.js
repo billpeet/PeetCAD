@@ -4987,6 +4987,8 @@ function importPart(doc, dir) {
     // then: kept if no configuration changes
     equationsLater = () => {
       if (!later.length) return;
+      // (the sizes named since are addresses now)
+      addresses = null;
       const shown = peet.ask({ op: "status" }).configuration;
       const volumes = () => {
         const list = (peet.ask({ op: "configurations" }).configurations || []).map(c => c.name);
@@ -4997,7 +4999,7 @@ function importPart(doc, dir) {
       for (const e of later) {
         const before = volumes();
         const why = importEquation(e, () => volumes().every((v, i) => v === before[i] || (v && before[i] && Math.abs(v - before[i]) <= 1e-6 * before[i])));
-        if (why) continue;
+        if (why) { const row = (equations.notImported || []).find(x => x.equation === e.expression.replace(/\s+/g, " ").trim()); if (row && why !== row.why) row.later = why; continue; }
         equations.imported++;
         equations.notImported = (equations.notImported || []).filter(x => x.equation !== e.expression.replace(/\s+/g, " ").trim());
         if (!--equations.left[NOT_IMPORTED]) delete equations.left[NOT_IMPORTED];
@@ -5036,6 +5038,18 @@ function importPart(doc, dir) {
               && names.every(n => peet.apply({ op: "set_suppression_expression", feature: n, value: p }).ok);
             if (!made_) { entry.missing.push(`${what}: its parameter could not be made`); continue; }
             suppressionParameters.set(target, p);
+            // The active configuration's own rule, where the feature was imported after its equations were (only
+            // live in another configuration: Escutcheon's "Hinge Holes LHS Mid" = "suppressed" in HingeRight)
+            const own = (config.equations || []).find(x => !x.disabled && (/^\s*"([^"]+)"\s*=/.exec(x.expression) || [])[1] === target);
+            const ownRule = own && translate(/^\s*"[^"]+"\s*=\s*([\s\S]*)$/.exec(own.expression)[1]);
+            if (ownRule && ownRule.value && peet.apply({ op: "set_parameter", name: p, value: ownRule.value, configurations: config.name }).ok) {
+              const row = (equations.notImported || []).find(x => x.equation === own.expression.replace(/\s+/g, " ").trim());
+              if (row) {
+                equations.notImported = equations.notImported.filter(x => x !== row);
+                equations.imported++;
+                if (!--equations.left[row.why]) delete equations.left[row.why];
+              }
+            }
           }
           reply = peet.apply({ op: "set_parameter", name: p, value: t.value, configurations: c.name });
         } else if (/\b(un)?suppressed\b/i.test(m[2])) { entry.missing.push(`${what}: it suppresses something that was not imported`); continue; }
