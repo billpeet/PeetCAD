@@ -277,9 +277,12 @@ function swPart(side, ask, file, configuration) {
   let reference = "SolidWorks' mass properties";
   const step = cfg.step ? measureStep(ask, path.join(side.dir, cfg.step)) : null;
   if (step) { volume = step.volume; min = step.min; max = step.max; reference = "SolidWorks' STEP"; }
-  // The flat size: its flat DXF, else its flat-pattern configuration's body if that is unfolded
-  let flat = cfg.flatDxf ? dxfSize(path.join(side.dir, cfg.flatDxf)) : null;
-  if (!flat) {
+  // The flat size: its flat DXF, else its flat-pattern configuration's body if that is unfolded. None where
+  // SolidWorks' flat pattern fails (its DXF is then of the folded part: 21441-1's Forklift Tine lifting plate,
+  // whose 45° bends in 2 mm sheet have a negative bend allowance)
+  const flatFails = (cfg.features || []).some(f => f.type === "FlatPattern" && f.errorCode);
+  let flat = cfg.flatDxf && !flatFails ? dxfSize(path.join(side.dir, cfg.flatDxf)) : null;
+  if (!flat && !flatFails) {
     const fp = (exp.configurations || []).find(c => c.flatPattern && c.name.toLowerCase() === `${cfg.name}sm-flat-pattern`.toLowerCase());
     const b = fp && fp.unfolded !== false && (fp.bodies || [])[0];
     if (b) flat = [0, 1, 2].map(i => ((b.tightBox || b.box)[i + 3] - (b.tightBox || b.box)[i]) * MM).sort((p, q) => q - p).slice(0, 2).map(tidy);
@@ -303,7 +306,7 @@ function swPart(side, ask, file, configuration) {
   walk(cfg.features);
   // The features that made a face of the body
   const made = new Set(bodies.flatMap(b => (b.faces || []).map(f => f.feature)).filter(Boolean).map(n => n.toLowerCase()));
-  return { volume, min, max, flat, reference, suppressed, dimensions, made, configuration: cfg.name };
+  return { volume, min, max, flat, flatFails, reference, suppressed, dimensions, made, configuration: cfg.name };
 }
 
 // ---- The SolidWorks side: a dry run ----
@@ -714,6 +717,16 @@ function compareJob(sw, peet, { ask, swJob, peetJob, tolerance = 1e-3, edited = 
         key = [...peetMates.keys()].find(k => !seen.has(k) && new RegExp(`^${m.name.toLowerCase()}\\d+$`).test(k)) || null;
       }
       const pm = key && peetMates.get(key);
+      // An end SolidWorks' export names no entity for, which SolidWorks reports failing or gives as the assembly
+      // itself, mates nothing SolidWorks has: the mate holds nothing there, and PeetCAD's import has nothing to
+      // make it of (Escutcheon Door's Concentric5/Distance3, whose assembly end keeps the template's position in
+      // every job, away from the stiffener's hole; Plinth PFC's Coincident19, failing in the job)
+      const itself = a.path.length ? a.path[a.path.length - 1].replace(/-\d+$/, "") : sw.root;
+      const dangling = (m.entities || []).some(e => !e.kind && (m.error || e.component === itself));
+      if (!pm && dangling) {
+        (out.dangling_in_solidworks = out.dangling_in_solidworks || []).push(m.name);
+        continue;
+      }
       if (!pm) {
         // A mate of a component PeetCAD hasn't (one added by hand after the run, say) follows from that
         const ofMissing = (m.entities || []).some(e => e.component && missingPaths.has([...a.path, ...e.component.split("/")].join("/")));
@@ -778,7 +791,8 @@ function compareJob(sw, peet, { ask, swJob, peetJob, tolerance = 1e-3, edited = 
       edited_after_run: rows.filter(r => r.edited_after_run).length },
     mates: { solidworks: mates.reduce((a, m) => a + m.solidworks, 0), peetcad: mates.reduce((a, m) => a + m.peetcad, 0), both: mates.reduce((a, m) => a + m.both, 0),
       solve_differently: mates.reduce((a, m) => a + m.solve_differently.length, 0),
-      missing: mates.reduce((a, m) => a + m.missing.length, 0), extra: mates.reduce((a, m) => a + m.extra.length, 0) },
+      missing: mates.reduce((a, m) => a + m.missing.length, 0), extra: mates.reduce((a, m) => a + m.extra.length, 0),
+      dangling_in_solidworks: mates.reduce((a, m) => a + (m.dangling_in_solidworks || []).length, 0) },
   };
   const verdict = summary.components.differing || summary.components.missing || summary.components.extra || mates.some(m => m.verdict !== "matches") || (mass && mass.verdict !== "matches")
     ? "differs" : "matches";
@@ -805,7 +819,7 @@ function comparePart(a, b) {
     out.flat = { solidworks: a.flat, peetcad: b.flat };
     out.flat_mm = tidy(Math.max(...p.map((x, i) => Math.abs(x - q[i]))));
     if (out.flat_mm > 1e-2) problems.push(`flat size ${out.flat_mm} mm off`);
-  }
+  } else if (a.flatFails) out.flat = { solidworks: "its flat pattern fails", peetcad: b.flat };
   const features = [];
   for (const [name, s] of a.suppressed) if (b.suppressed.has(name) && b.suppressed.get(name) !== s) features.push(`${name}: ${s ? "suppressed" : "unsuppressed"} in SolidWorks`);
   if (features.length) { out.feature_suppression = features; problems.push(`${features.length} features suppressed differently`); }
@@ -859,7 +873,7 @@ function printReport(r) {
   const s = r.summary;
   console.log(`${r.verdict.toUpperCase()}: ${r.solidworks.kind} ${r.solidworks.root} (job ${r.solidworks.job}) against PeetCAD ${r.peetcad.root} (job ${r.peetcad.job})`);
   console.log(`components: ${s.components.solidworks} in ${r.solidworks.kind}, ${s.components.peetcad} in PeetCAD; ${s.components.matching} match, ${s.components.differing} differ, ${s.components.missing} missing in PeetCAD, ${s.components.extra} extra; ${s.components.placed_off} placed off (worst ${s.components.worst_off_mm} mm); ${s.components.parts_differing} parts differ${s.components.edited_after_run ? `; ${s.components.edited_after_run} edited by hand after the run` : ""}`);
-  console.log(`mates: ${s.mates.solidworks} in ${r.solidworks.kind}, ${s.mates.peetcad} in PeetCAD, ${s.mates.both} on both, ${s.mates.missing} missing in PeetCAD, ${s.mates.extra} extra, ${s.mates.solve_differently} solve differently`);
+  console.log(`mates: ${s.mates.solidworks} in ${r.solidworks.kind}, ${s.mates.peetcad} in PeetCAD, ${s.mates.both} on both, ${s.mates.missing} missing in PeetCAD, ${s.mates.extra} extra, ${s.mates.solve_differently} solve differently${s.mates.dangling_in_solidworks ? `; ${s.mates.dangling_in_solidworks} SolidWorks has with nothing at one end, not in PeetCAD` : ""}`);
   if (r.mass) console.log(`assembly: volume x${r.mass.volume_ratio} of ${r.mass.reference}, box ${r.mass.box_mm} mm off: ${r.mass.verdict}`);
   for (const c of r.components.filter(c => c.verdict !== "matches")) {
     console.log(`  ${c.verdict.padEnd(14)} ${c.component || c.peetcad}${c.edited_after_run ? " (edited after the run)" : ""}${c.problems && c.problems.length ? ": " + c.problems.join("; ") : ""}`);

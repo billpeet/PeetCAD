@@ -578,15 +578,28 @@ function importPart(doc, dir) {
     if (draw) items.push(...draw(toPeet));
     else {
       const ends = [];
+      // Each SolidWorks sketch point by its id, with what was drawn on it: a circle's centre that is a line's end
+      // in SolidWorks is one point there (Escutcheon's Sketch236: the mid hinge holes on the ends of the line
+      // whose middle is the escutcheon's), which joining ends where they meet doesn't join
+      const byId = new Map();
+      const note = (p, label) => {
+        if (!p || !Array.isArray(p.id)) return;
+        const key = p.id.join(".");
+        if (!byId.has(key)) byId.set(key, []);
+        byId.get(key).push(label);
+      };
       s.segments.forEach((g, i) => {
         const as = "e" + i;
         const construction = g.construction || holes ? { construction: true } : {};
         if (g.type === "line" && g.start && g.end) {
           items.push({ type: "line", from: toPeet(g.start), to: toPeet(g.end), ...construction, as });
           ends.push([as + ".start", toPeet(g.start)], [as + ".end", toPeet(g.end)]);
+          note(g.start, as + ".start");
+          note(g.end, as + ".end");
           own.push({ g, as, turned: false });
         } else if (g.type === "arc" && g.circle) {
           items.push({ type: "circle", center: toPeet(g.center), radius: tidy(g.radius * MM), ...construction, as });
+          note(g.center, as + ".center");
           own.push({ g, as, turned: false });
         } else if (g.type === "arc") {
           // PeetCAD's arcs run counter-clockwise from start to end
@@ -594,6 +607,9 @@ function importPart(doc, dir) {
           const [start, end] = ccw ? [g.start, g.end] : [g.end, g.start];
           items.push({ type: "arc", center: toPeet(g.center), start: toPeet(start), end: toPeet(end), ...construction, as });
           ends.push([as + ".start", toPeet(start)], [as + ".end", toPeet(end)]);
+          note(g.center, as + ".center");
+          note(start, as + ".start");
+          note(end, as + ".end");
           own.push({ g, as, turned: !ccw });
         } else if (g.type === "spline" && g.points && g.points.length >= 2) {
           // SolidWorks' spline points are the points it runs through
@@ -638,6 +654,12 @@ function importPart(doc, dir) {
         groups.get(key).push(label);
       }
       for (const labels of groups.values()) for (let i = 1; i < labels.length; i++) items.push({ type: "coincident", of: [labels[0], labels[i]] });
+      // Centres that are another segment's point in SolidWorks (ends are joined above, where they meet)
+      for (const labels of byId.values()) {
+        const centres = labels.filter(l => l.endsWith(".center"));
+        const anchor = labels.find(l => !l.endsWith(".center")) || centres[0];
+        for (const c of centres) if (c !== anchor) items.push({ type: "coincident", of: [anchor, c] });
+      }
       // A hole wizard's sketch: a circle of the hole's size on each of its points, which keeps to the
       // point when the sketch's dimensions move it
       // A hole wizard slot's: the slot, its arcs' centres (`holes.slots`, in SolidWorks' sketch) either side
