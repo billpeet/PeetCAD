@@ -692,7 +692,47 @@ function importPart(doc, dir) {
     }
     for (const o of own) if (o.text) fitText(f, result, o.g, (reply.drawn || []).find(x => x.as === o.as));
     if (!draw && relations) relate(f, result, s, sf, own, reply.drawn || []);
+    if (!draw && relations) rigidBlocks(result, s, own, reply.drawn || []);
     return result;
+  }
+
+  /**
+   * Holds what each sketch block put in a sketch together, as SolidWorks' block instance does: its pieces
+   * keep their places relative to each other, and the instance moves as one with what its relations tie it
+   * to (Plinth PFC Long B's Sketch10, whose block of slots and holes is 330 mm from the channel's middle, so
+   * that they follow the middle when the channel is made longer). Each point of the block is held across and
+   * up from the block's first one; a circle keeps its size. The block can't turn, which SolidWorks' can.
+   */
+  function rigidBlocks(result, s, own, drawn) {
+    if (!s.blocksDrawn) return;
+    const blocks = new Map();
+    for (const o of own) {
+      const g = o.g, d = g && drawn.find(x => x.as === o.as);
+      if (!d || !Array.isArray(g.id) || !/^block\d+$/.test(g.id[0])) continue;
+      if (!blocks.has(g.id[0])) blocks.set(g.id[0], { points: [], circles: [] });
+      const b = blocks.get(g.id[0]);
+      const ends = g.type === "line" ? [["start", d.start], ["end", d.end]]
+        : g.type === "arc" && !g.circle ? [["center", d.center], ["start", o.turned ? d.end : d.start], ["end", o.turned ? d.start : d.end]]
+          : g.type === "arc" ? [["center", d.center]] : g.type === "spline" ? [["start", d.start], ["end", d.end]] : [];
+      for (const [k, id] of ends) if (g[k] && id !== undefined && !b.points.some(p => p.id === id)) b.points.push({ id, at: result.toPeet(g[k]) });
+      if (g.type === "arc" && g.circle && d.id !== undefined) b.circles.push({ id: d.id, radius: tidy(g.radius * MM) });
+    }
+    let n = 0;
+    for (const [, b] of blocks) {
+      if (b.points.length < 2 && !b.circles.length) continue;
+      const [first, ...rest] = b.points, items = [];
+      const label = () => `Block ${++n}`;
+      // (A point level with the first, or above it, is held so by a relation: a distance can't be nothing.)
+      for (const p of rest) {
+        const [dx, dy] = [0, 1].map(k => tidy(Math.abs(p.at[k] - first.at[k])));
+        if (dx < 1e-6 && dy < 1e-6) { items.push({ type: "coincident", of: [first.id, p.id] }); continue; }
+        items.push(dx < 1e-6 ? { type: "vertical", of: [first.id, p.id] } : { type: "horizontal_distance", of: [first.id, p.id], value: dx, name: label() });
+        items.push(dy < 1e-6 ? { type: "horizontal", of: [first.id, p.id] } : { type: "vertical_distance", of: [first.id, p.id], value: dy, name: label() });
+      }
+      for (const c of b.circles) items.push({ type: "radius", of: [c.id], value: c.radius, name: label() });
+      if (peet.ask({ op: "draw", sketch: result.name, draw: items }).ok) { peet.apply({ op: "draw", sketch: result.name, draw: items }); continue; }
+      for (const item of items) if (peet.ask({ op: "draw", sketch: result.name, draw: [item] }).ok) peet.apply({ op: "draw", sketch: result.name, draw: [item] });
+    }
   }
 
   /**
@@ -3101,6 +3141,54 @@ function importPart(doc, dir) {
   }
 
   /**
+   * An edge flange's edges, as SolidWorks gives them (in metres). A flange that can't be built in the part as
+   * it is (suppressed everywhere, on an edge another flange has taken) has none in the export: its edges are
+   * then the lines its outlines convert from the model's edges, where SolidWorks last solved them (Door's
+   * RLockingDoorFlange, on the edge RightReturn is on, which FabSys suppresses before unsuppressing it).
+   */
+  function flangeEdges(f) {
+    const exported = (values(f).Edges || []).filter(e => e && e.start && e.end);
+    if (exported.length || f.type !== "EdgeFlange") return exported;
+    const out = [];
+    for (const p of (f.sub || []).filter(c => SKETCH.test(c.type) && c.sketch && !c.sketch.error && c.sketch.modelToSketch)) {
+      const sf = frameOf(p.sketch.modelToSketch);
+      for (const r of p.sketch.relations || []) {
+        const line = r.type === "useedge" && (r.entities || []).find(e => e && e.type === "line" && e.start && e.end);
+        if (!line) continue;
+        const [s, t] = [fromSketch(sf, line.start), fromSketch(sf, line.end)];
+        if (len(sub(t, s)) > 1e-3) { out.push({ start: mul(s, 1 / MM), end: mul(t, 1 / MM), converted: true }); break; }
+      }
+    }
+    return out;
+  }
+  /** Whether two edges (in metres) lie on one line and overlap. */
+  const sameEdge = (a, b) => {
+    const [as, at, bs, bt] = [a.start, a.end, b.start, b.end].map(mm), u = unit(sub(at, as));
+    if (Math.abs(dot(unit(sub(bt, bs)), u)) < 0.9999) return false;
+    const off = p => len(sub(sub(p, as), mul(u, dot(sub(p, as), u))));
+    if (off(bs) > 0.01 || off(bt) > 0.01) return false;
+    const [lo, hi] = [Math.min(dot(sub(bs, as), u), dot(sub(bt, as), u)), Math.max(dot(sub(bs, as), u), dot(sub(bt, as), u))];
+    return Math.min(hi, len(sub(at, as))) - Math.max(lo, 0) > 1e-3;
+  };
+  /**
+   * The live flanges on an edge a flange suppressed everywhere is on: SolidWorks can't build it until they are
+   * suppressed (its error 51), and the scripts that use it suppress them first (FabSys suppresses Door's
+   * RightReturn and unsuppresses RLockingDoorFlange). They are suppressed while it is built.
+   */
+  const displacedBy = new Map(); // SolidWorks feature imported asleep -> the PeetCAD features suppressed to build it
+  const slept = new Map();       // SolidWorks feature imported asleep -> the PeetCAD features suppressed for it (not those that follow them)
+  function displaced(f) {
+    if (f.type !== "EdgeFlange") return [];
+    const mine = flangeEdges(f), out = [];
+    for (const [name, names] of made) {
+      const other = byName.get(name);
+      if (asleep.has(name) || !other || other.type !== "EdgeFlange" || other.suppressed) continue;
+      if (flangeEdges(other).some(e => mine.some(m => sameEdge(m, e)))) out.push(...names);
+    }
+    return out;
+  }
+
+  /**
    * A feature as SolidWorks has it: one that is suppressed is built like any other and then suppressed, in
    * every configuration. It can't be compared with anything, since SolidWorks' body does not have it.
    */
@@ -3116,22 +3204,37 @@ function importPart(doc, dir) {
     // What it is built on that was imported asleep (a flange its sketch is on, the slot a sketch converts the
     // edges of) is woken while it is built, as it is there in SolidWorks wherever this is unsuppressed
     const woken = [], seen = new Set();
+    // and what had to be suppressed to build those, and this
+    const off = new Set(liveElsewhere(f.name) ? [] : displaced(f));
     (function wake(parents) {
       for (const p of parents || []) {
         if (seen.has(p)) continue;
         seen.add(p);
-        if (asleep.has(p)) woken.push(...made.get(p));
+        if (asleep.has(p)) woken.push(...(slept.get(p) || made.get(p)));
+        for (const n of displacedBy.get(p) || []) off.add(n);
         wake((byName.get(p) || {}).parents);
       }
     })(f.parents);
-    const sleep = on => { for (const n of woken) peet.apply({ op: "suppress", feature: n, on, configurations: "all" }); };
+    const sleep = on => {
+      for (const n of off) peet.apply({ op: "suppress", feature: n, on: !on });
+      for (const n of woken) peet.apply({ op: "suppress", feature: n, on, configurations: "all" });
+    };
     sleep(false);
     asleepNow = !liveElsewhere(f.name);
     try { handleLive({ ...f, suppressed: false }); } finally { asleepNow = false; }
     sleep(true);
     const names = made.get(f.name);
-    const built = !had && names && names.length > 0 && names.every(n => peet.apply({ op: "suppress", feature: n, on: true, configurations: "all" }).ok);
-    if (built) asleep.add(f.name);
+    // The feature is suppressed, and what goes with it (a flange's corners with others) follows it, so that
+    // unsuppressing it brings them back too (FabSys unsuppresses RInterlockingFlange1 only: its corners, left
+    // suppressed, would leave Edge-Flange16 run on 13 mm to meet it). What doesn't follow is suppressed too.
+    const explicit = [];
+    const built = !had && names && names.length > 0 && names.every((n, i) => {
+      if (i > 0 && (peet.ask({ op: "feature", feature: n }) || {}).status === "suppressed") return true;
+      explicit.push(n);
+      return peet.apply({ op: "suppress", feature: n, on: true, configurations: "all" }).ok;
+    });
+    if (built) { asleep.add(f.name); slept.set(f.name, explicit); }
+    if (built && off.size) displacedBy.set(f.name, [...off]);
     for (const x of report.features.slice(before)) {
       if (x.name !== f.name) continue;
       if (built) x.result = "imported and suppressed";
@@ -3412,7 +3515,7 @@ function importPart(doc, dir) {
       }
 
       case "EdgeFlange": {
-        const edges = (v.Edges || []).filter(e => e && e.start && e.end);
+        const edges = flangeEdges(f);
         if (edges.length === 0) return record(f, "failed", "its edges were not exported");
         const position = { 1: "material_inside", 2: "material_outside", 3: "bend_outside" }[v.PositionType];
         if (!position) return record(f, "not supported", `flange position type ${v.PositionType}`);

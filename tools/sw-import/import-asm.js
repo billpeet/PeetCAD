@@ -213,7 +213,16 @@ const STANDARD_NORMALS = { top: [0, 0, 1], front: [0, -1, 0], right: [1, 0, 0] }
 
 // The faces and edges of each part file, as PeetCAD has them, to find a mate's end by its geometry
 const geometryCache = new Map();
-function geometryOf(file) {
+/**
+ * The parts the assembly being imported sizes by its equations: library copy -> the part as the run imported
+ * it. Their faces are looked for in the part as SolidWorks' export has it, not as an assembly's equations last
+ * wrote it into the copy (Plinth Folded's equation makes Pipe 308 mm and writes it when the assembly is saved;
+ * SolidWorks' Pipe, which both plinth assemblies mate to, is 300).
+ */
+let asExported = new Map();
+function geometryOf(view) {
+  const [f, c] = splitView(view);
+  const file = asExported.has(f) ? asExported.get(f) + (c ? `|${c}` : "") : view;
   if (geometryCache.has(file)) return geometryCache.get(file);
   const [faces, edges] = askView(file, [{ op: "faces" }, { op: "edges" }]);
   const g = { faces: (faces || {}).faces || [], edges: (edges || {}).edges || [] };
@@ -227,6 +236,16 @@ const norm3 = a => { const l = len3(a); return a.map(v => v / l); };
 /** Distance from a point to the line through `o` along unit `d`. */
 const offLine = (p, o, d) => { const v = sub3(p, o); const t = dot3(v, d); return len3(sub3(v, d.map(x => x * t))); };
 const TOL = 1e-3;   // mm
+/** How far off a part (mm) a point SolidWorks gives for one of its faces can be before it is no face of the part. */
+const NOWHERE = 1;
+/** How far a point (mm, in the part) is outside the box round the part's edges: 0 if it is in it. */
+function offPart(file, p) {
+  const { edges } = geometryOf(file);
+  const points = edges.flatMap(g => [g.from, g.to, g.center]).filter(Boolean);
+  if (!points.length) return 0;
+  const lo = [0, 1, 2].map(k => Math.min(...points.map(q => q[k]))), hi = [0, 1, 2].map(k => Math.max(...points.map(q => q[k])));
+  return Math.hypot(...[0, 1, 2].map(k => Math.max(lo[k] - p[k], 0, p[k] - hi[k])));
+}
 
 /**
  * What SolidWorks says a mate end is, in the part's coordinates (mm): a plane, an axis (a cylinder, a cone, a
@@ -544,7 +563,7 @@ function swDirection(e, comp) {
  * plane, axis or point) and `sign`: whether PeetCAD's direction for it is SolidWorks' (1) or the other way
  * (-1), so that SolidWorks' alignment and flipped dimension can be said in PeetCAD's terms.
  */
-function endOf(e, byPath, assembly, partFile, others = []) {
+function endOf(e, byPath, assembly, partFile, others = [], positional = true) {
   const own = !e.component || e.component === assembly;
   const isOrigin = e.entity && e.entity.kind === "sketchPoint" && e.entity.sketch === "Origin";
   const isPlane = e.entity && e.entity.kind === "feature" && e.entity.type === "RefPlane";
@@ -571,7 +590,7 @@ function endOf(e, byPath, assembly, partFile, others = []) {
       if (found) hits.push(comp.path);
     }
     if (!hits.length) return { error: "an end SolidWorks names the assembly for, with no entity: on a component it couldn't resolve (no face or edge of the assembly's parts is where its numbers put it)", unmatched: true };
-    const end = endOf({ ...e, component: hits[0] }, byPath, assembly, partFile);
+    const end = endOf({ ...e, component: hits[0] }, byPath, assembly, partFile, [], positional);
     return end.error ? end : { ...end, guessed: true, note: `SolidWorks names the assembly for an end with no entity; ${hits.length > 1 ? `of ${hits.join(", ")}, ` : ""}${hits[0]} has it` };
   }
   const comp = byPath.get(e.component);
@@ -605,6 +624,12 @@ function endOf(e, byPath, assembly, partFile, others = []) {
   let found = null;
   if (!e.entity && e.referenceType === 1 && shape.kind === "axis") found = findIn(file, { kind: "circle", c: shape.o, n: shape.d, r: shape.r });
   found = found || findIn(file, shape);
+  // A face SolidWorks gives only numbers for (a mate of a suppressed component, last solved long before) that
+  // are nowhere on the part: the face it was is not there now, and SolidWorks can't find it either when the
+  // component is unsuppressed (Plinth PFC Assembly's Coincident20 and Coincident23, 360 mm off Plinth PFC Long B,
+  // which fail in the jobs). A face that only lies in that plane somewhere else on the part is not it.
+  const off = positional && !e.entity && shape.kind === "plane" && shape.near ? offPart(file, shape.near) : 0;
+  if (found && off > NOWHERE) return { error: `SolidWorks' face is ${tidy(off)} mm off ${viewName(file)} (it was last solved for another size of it): no face of the part is it`, unmatched: true };
   if (!found) return { error: `no ${shape.kind === "plane" ? "flat face" : shape.kind === "axis" ? "round face or edge on that axis" : shape.kind === "straight" ? "straight edge on that line" : shape.kind} of ${viewName(file)} is where SolidWorks' is`, unmatched: true };
   const { dir, ...where } = found;
   const element = shape.kind === "plane" || shape.kind === "refplane" ? "plane" : shape.kind === "point" ? "point" : "axis";
@@ -1491,7 +1516,7 @@ function mateOp(f, byPath, name, want, row) {
   const partFile = comp => /\.sldprt$/i.test(comp.file || "") ? partOf(comp).view || null : null;
   const named = (f.mate.entities || []).map(e => e.component).filter(c => c && c !== name);
   if (kind === "path") return pathOp(f, byPath, name, want, row, partFile, named);
-  const ends = (f.mate.entities || []).map(e => endOf(e, byPath, name, partFile, named));
+  const ends = (f.mate.entities || []).map(e => endOf(e, byPath, name, partFile, named, !/^(parallel|perpendicular|angle|limit_angle)$/.test(kind)));
   const bad = ends.find(e => e.error);
   if (bad) { row.result = bad.unmatched ? "failed" : "not supported"; row.why = bad.error; return null; }
   // An end with no component is on the assembly's own plane or origin
@@ -1536,6 +1561,15 @@ function mateOp(f, byPath, name, want, row) {
       else if (values.ConstraintType === 2) { op.mode = "dimension"; op.distance = tidy(values.DistanceFromEnd * MM); }
       else if (values.ConstraintType === 3) { op.mode = "percent"; op.percent = tidy(values.PercentDistanceFromEnd * 100); }
       if (values.FlipDimension && op.mode) op.flip_dimension = true;
+      // Without a constraint type, centred if that holds where SolidWorks has the components: every slot mate
+      // of the library has its pin at the middle of its slot, and SolidWorks keeps it there in the jobs when the
+      // parts change size (Escutcheon Surround Removable's Slot3/Slot4: free, PeetCAD puts each pin at an end of
+      // its slot, as near as it can to where it was, and Esc Surround R R comes out 4 mm in). Free if not.
+      if (values.ConstraintType === undefined && !f.suppressed) {
+        row.alternatives = [{ op: { ...op }, replace: true, note: "free in its slot: centred doesn't hold where SolidWorks has the components (the export doesn't say the slot mate's constraint)" }];
+        op.mode = "centered";
+        row.note = "centred in its slot, where SolidWorks has its pin (the export doesn't say the slot mate's constraint)";
+      }
     } else if (kind === "limit_angle" || kind === "limit_distance") {
       const angle = kind === "limit_angle";
       const [lo, hi] = angle ? [values.MinimumAngle, values.MaximumAngle] : [values.MinimumDistance, values.MaximumDistance];
@@ -1650,6 +1684,13 @@ function addMate(peet, f, op, row, want) {
   const fine = status === "ok" || (status === "suppressed" && (f.suppressed || waits));
   if (!reply.ok || (status && !fine)) {
     peet.restore(mark);
+    // One the export doesn't settle that can't be added so: the next way it could be
+    const [alt, ...rest] = row.alternatives || [];
+    if (alt) {
+      row.alternatives = rest;
+      if (alt.note) row.note = alt.replace || !row.note ? alt.note : `${row.note}; ${alt.note}`;
+      return addMate(peet, f, alt.op, row, want);
+    }
     row.result = "failed";
     row.why = reply.error || (reply.mate && (reply.mate.message || reply.mate.status));
     return false;
@@ -1665,14 +1706,14 @@ function addMate(peet, f, op, row, want) {
       const other = peet.apply(alt.op);
       const placed = other.ok && other.mate && other.mate.status === "ok" ? peet.ask({ op: "components" }) : null;
       const off = placed ? tidy(offFrom(want, placed.components)) : Infinity;
-      if (off < best.moved) best = { moved: off, op: alt.op, note: alt.note };
+      if (off < best.moved) best = { moved: off, op: alt.op, note: alt.note, replace: alt.replace };
       if (off <= 1e-3) break;
     }
     peet.restore(mark);
     peet.apply(best.op);
     now = peet.ask({ op: "components" });
     moved = tidy(offFrom(want, now.components));
-    if (best.note) row.note = `${row.note ? row.note + "; " : ""}${best.note}`;
+    if (best.note) row.note = best.replace || !row.note ? best.note : `${row.note}; ${best.note}`;
   }
   delete row.alternatives;
   row.result = "imported";
@@ -1824,7 +1865,16 @@ function importAssembly(name, exp, outFile, listed = null, frame = null) {
   // Component patterns, before the equations, which may drive their counts and spacings
   if (cfg) importPatterns(peet, cfg, report, byPath, want, placeOf, insertPlain);
 
-  // Equations, before the mates: a part an equation sizes (Plinth Folded's pipes) is mated at its size
+  // Equations, before the mates: a part an equation sizes (Plinth Folded's pipes) is mated at its size. Its
+  // faces are found in it as SolidWorks has it (`asExported`).
+  asExported = new Map();
+  for (const e of [cfg, ...others].flatMap(o => (o && o.equations) || [])) {
+    const m = /^\s*"[^"]*@([^"@]+)<\d+>\.Part"\s*=/i.exec(e.expression || "");
+    const c = m && all.find(x => /\.sldprt$/i.test(x.file || "") && path.basename(x.file.replace(/\\/g, "/")).replace(/\.sldprt$/i, "").toLowerCase() === m[1].trim().toLowerCase());
+    const copy = c && partFileOf(c.file);
+    const run = c && path.join(partsDir, path.basename(c.file.replace(/\\/g, "/")).replace(/\.sldprt$/i, "") + ".peet");
+    if (copy && run && path.resolve(copy) !== path.resolve(run)) asExported.set(copy, run);
+  }
   if (cfg && (cfg.equations || []).length) importEquations(peet, cfg, report, byPath, want, name);
 
   // Mates. One SolidWorks has suppressed here and live in another configuration is added in that one, where the

@@ -682,7 +682,9 @@ with SolidWorks' Front, Top and Right Plane, the assemblies' own reference plane
 features (`import-asm.js --link`, `smart.js`; see `tools/sw-import/README.md`). Checked with FabSys's own template
 validation against manifests of the library (`manifests.js`) on the six corpus jobs: every name the script uses
 exists but the Door's six interlocking flanges, which are suppressed in every configuration and whose edges the
-export does not have (the exporter would have to read them with the flanges unsuppressed). The script inserts seven
+export does not have (the exporter would have to read them with the flanges unsuppressed). Since FS13 they are
+imported: on the edges their outlines convert, built with RightReturn or LeftReturn (the flange on that edge, which
+the script suppresses first) suppressed, then suppressed themselves. The script inserts seven
 templates that are not in Templates at all (`Hold Down Tabs Qty 4` and the six Lockwood brackets and locks).
 
 **Three SolidWorks behaviours FabSys's names and picks rely on** (30 October 2026, from SolidWorks' own output of
