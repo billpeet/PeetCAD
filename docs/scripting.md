@@ -513,7 +513,9 @@ with their defaults' types):
   distance from the seed's centre (the middle of the box round its faces, or of its
   sketch's points if it left no faces of its own; or `up_to_seed`) to the reference, less `up_to_offset` (more with `up_to_reverse`). `up_to_keeps`
   `"spacing"` (default) gives as many copies as fit, one exactly at the end included;
-  `"count"` spreads `count` copies evenly. `"up_to": null` sets both again.
+  `"count"` spreads `count` copies evenly. The value that follows (the count, or the
+  spacing) is written into the pattern at each rebuild, so `dimensions` and expressions
+  read the worked-out value, as SolidWorks shows it. `"up_to": null` sets both again.
 - `count` for linear and circular part patterns, and a grid's `count2`, accept a number
   or an expression such as `"iif(width > 299mm, 3, 2)"` or `"int(width / 100mm)"`.
   Counts include the original and must evaluate to unitless whole numbers from 2 to

@@ -42,6 +42,18 @@ fn holes(doc: &Document) -> f64 {
     (40000.0 - actual) / (4.0 * std::f64::consts::PI)
 }
 
+/// The value of a pattern's dimension, by its field, as `dimensions` reports it.
+fn field_value(doc: &mut Document, feature: &str, field: &str) -> f64 {
+    let dims = ok(doc, json!({"op":"dimensions", "feature":feature}));
+    dims["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["field"] == field)
+        .and_then(|d| d["value"].as_f64())
+        .unwrap_or_else(|| panic!("no {field} in {dims}"))
+}
+
 fn assert_holes(doc: &Document, n: u32) {
     let got = holes(doc);
     assert!((got - f64::from(n)).abs() < 1e-6, "{got} holes, not {n}");
@@ -58,6 +70,8 @@ fn the_count_follows_the_reference() {
                "up_to":{"plane":"End"}, "up_to_offset":2}),
     );
     assert_holes(&doc, 5);
+    // The count it reports is the one worked out, as SolidWorks shows it
+    assert_eq!(field_value(&mut doc, "LPattern1", "count"), 5.0);
     // A copy exactly at the end counts: 25 mm is five spacings
     ok(
         &mut doc,
@@ -97,6 +111,22 @@ fn the_spacing_follows_the_reference_when_the_count_is_given() {
                "up_to":{"point":{"at":[50,50,0]}}, "up_to_offset":5, "up_to_keeps":"count"}),
     );
     assert_holes(&doc, 3);
+    // The spacing it reports, and that expressions read, is the one worked out (SolidWorks'
+    // Back Wall: D3@LPattern1 is 280.65 over the wall, not the 270.98 last stored)
+    assert!((field_value(&mut doc, "LPattern1", "spacing") - 15.0).abs() < 1e-9);
+    ok(
+        &mut doc,
+        json!({"op":"set_parameter", "name":"read", "value":"\"spacing@LPattern1\" * 2"}),
+    );
+    let params = ok(&mut doc, json!({"op":"parameters"}));
+    let read = params["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "read")
+        .unwrap()["value"]
+        .clone();
+    assert!(read.to_string().contains("30"), "{read}");
     let faces = ok(&mut doc, json!({"op":"faces"}));
     let round: Vec<f64> = faces["faces"]
         .as_array()

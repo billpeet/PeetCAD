@@ -584,6 +584,62 @@ fn a_changed_placement_moves_the_whole_profile() {
 }
 
 #[test]
+fn a_profile_on_a_moved_model_edge_goes_with_it_unchanged() {
+    // Plinth PFC Long B's bolt holes: a block hung from the midpoint of a projected edge
+    // of the channel by a vertical line, free to slide up and down. When the channel gets
+    // 696 mm longer the edge's midpoint moves 348 mm along, and the block goes with it
+    // without sliding (SolidWorks keeps the holes' height).
+    let mut s = Sketch::new();
+    let edge = s.add_line(v(-197.64, 111.357), v(1902.36, 111.357));
+    let (e0, e1) = pts(&s, edge);
+    for id in [edge, e0, e1] {
+        s.entity_mut(id).unwrap().locked = true;
+    }
+    let hang = s.add_line(v(852.36, 111.357), v(852.36, -511.18));
+    let top = pts(&s, hang).0;
+    add!(
+        s,
+        K::Midpoint {
+            point: top,
+            line: edge
+        }
+    );
+    add!(s, K::Vertical(hang));
+    let shape = shapes::rectangle(&mut s, v(512.36, -91.357), v(532.36, -31.357));
+    let [bottom, right, _, left] = [
+        shape.curves[0],
+        shape.curves[1],
+        shape.curves[2],
+        shape.curves[3],
+    ];
+    dim!(s, K::Length(bottom), 20.0);
+    dim!(s, K::Length(right), 60.0);
+    add!(s, K::Parallel(hang, left));
+    dim!(s, K::Distance(top, left), 340.0);
+    let hole = s.add_circle(v(522.36, -61.357), 3.0);
+    let corner = pts(&s, bottom).0;
+    let centre = match s.entity(hole).unwrap().geometry {
+        Geometry::Circle { center, .. } => center,
+        _ => unreachable!(),
+    };
+    dim!(s, K::HorizontalDistance(corner, centre), 10.0);
+    dim!(s, K::VerticalDistance(corner, centre), 30.0);
+    assert_solved(&mut s);
+    let (before, _) = circ(&s, hole);
+    for (id, x) in [(e0, -197.64), (e1, 2598.36)] {
+        if let Geometry::Point { pos } = &mut s.entity_mut(id).unwrap().geometry {
+            pos.x = x;
+        }
+    }
+    assert_solved(&mut s);
+    let (after, _) = circ(&s, hole);
+    assert!(
+        after.distance(before + v(348.0, 0.0)) < 1e-9,
+        "{before:?} -> {after:?}"
+    );
+}
+
+#[test]
 fn signs_are_kept() {
     let mut s = Sketch::new();
     let l = s.add_line(v(0.0, 0.0), v(10.0, 0.0));

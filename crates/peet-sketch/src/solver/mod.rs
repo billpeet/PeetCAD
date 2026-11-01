@@ -553,19 +553,36 @@ fn solve_holding_still(
     eqs: &[Eq],
     vals: &mut [f64],
 ) -> (bool, usize) {
-    // Only where what is unsatisfied is dimensions, given new values: geometry moved out
-    // of its relations is put back the least distance, as before.
+    // Only where what is unsatisfied is dimensions, given new values, or relations to
+    // geometry outside the cluster (projected model edges) that has moved: geometry moved
+    // out of its relations otherwise is put back the least distance, as before.
     let changed = |e: &u32| eqs[*e as usize].residual(vals).abs() > SKIP;
-    if !cluster_eqs
-        .iter()
-        .filter(|e| changed(e))
-        .all(|&e| dimensions[e as usize])
-    {
-        return (false, 0);
+    let in_cluster: std::collections::HashSet<u32> = vars.iter().copied().collect();
+    let reads_outside = |e: u32| {
+        eqs[e as usize]
+            .slots
+            .iter()
+            .any(|&s| s != NONE && !in_cluster.contains(&s))
+    };
+    let mut only_dimensions = true;
+    for e in cluster_eqs.iter().copied().filter(changed) {
+        if dimensions[e as usize] {
+            continue;
+        }
+        if !reads_outside(e) {
+            return (false, 0);
+        }
+        only_dimensions = false;
     }
     let start: Vec<f64> = vars.iter().map(|&v| vals[v as usize]).collect();
+    // A profile tied to model edges that moved goes with them, unchanged, if that does it
+    // (SolidWorks: Plinth PFC Long B's bolt holes, a block on the midpoint of the channel's
+    // edge, keep their height when the channel gets longer).
     if translate(vars, cluster_eqs, axis, eqs, vals, &start) {
         return (true, 0);
+    }
+    if !only_dimensions {
+        return (false, 0);
     }
     let score = |v: u32| held_by[group[v as usize] as usize];
     let mut ranks: Vec<usize> = vars.iter().map(|&v| score(v)).collect();
