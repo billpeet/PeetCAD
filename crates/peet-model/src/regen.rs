@@ -2945,7 +2945,12 @@ impl<'m> Ctx<'m, '_> {
                 Ok((spacing, n as u32))
             }
             PatternKeeps::Count => {
-                let n = self.scalar(&d.count, ScalarKind::Number, &format!("{what} count"))?;
+                let mut n = self.scalar(&d.count, ScalarKind::Number, &format!("{what} count"))?;
+                // Rounded where an expression gives it, as any pattern's count is (SolidWorks
+                // rounds an equation's count: Back Wall's ("Base Height" - 50) / 250 is 8 at 7.8)
+                if d.count.expression.is_some() {
+                    n = n.round();
+                }
                 if !(n.is_finite() && n.fract() == 0.0 && (2.0..=10_000.0).contains(&n)) {
                     return Err(format!(
                         "the count must be a whole number between 2 and 10000 (it is {n})"
@@ -2975,6 +2980,40 @@ impl<'m> Ctx<'m, '_> {
                             hi = hi.max(p);
                         }
                     }
+                }
+            }
+        }
+        // A seed that left no faces of its own (holes where the part already has holes:
+        // SolidWorks' Gland Plate copies a hole on another pattern's corner holes) is
+        // where its sketch puts it: a hole's positions, or the points of another's profile
+        if !lo.x.is_finite() {
+            for &id in seeds {
+                let Some(feature) = self.model.feature(id) else {
+                    continue;
+                };
+                let (sketch, hole) = match &feature.kind {
+                    FeatureKind::Hole(h) => (h.sketch, true),
+                    FeatureKind::Extrude(e) => (e.sketch, false),
+                    FeatureKind::SheetCut(c) => (c.sketch, false),
+                    _ => continue,
+                };
+                let Ok((plane, sketch)) = self.sketch_input(sketch) else {
+                    continue;
+                };
+                let points: Vec<peet_math::DVec2> = if hole {
+                    crate::hole::hole_positions(sketch)
+                } else {
+                    sketch
+                        .entities()
+                        .filter(|(_, e)| !e.construction)
+                        .flat_map(|(_, e)| e.geometry.points())
+                        .map(|p| sketch.point(p))
+                        .collect()
+                };
+                for p in points {
+                    let w = plane.frame.to_world(DVec3::new(p.x, p.y, 0.0));
+                    lo = lo.min(w);
+                    hi = hi.max(w);
                 }
             }
         }

@@ -28,8 +28,10 @@ one, the volume and box to match are its STEP body's as PeetCAD measures it, not
 which are a few parts in 100,000 out round freeform faces such as the ends of slanted bends. A part nothing
 can be built of is imported from its STEP file instead, and says so in its report.
 
-The library's export is on SolidWorks-PC in `C:\Users\will\AppData\Local\PeetSwExport\out-all`, and a copy
-in `peetcad-imports\exports\out-all`, with SolidWorks' STEP files in `peetcad-imports\exports\step`. Keep copies out of `%TEMP%`, which Windows empties.
+The library's latest export (format 9: parts and assemblies, with their STEP and DXF files) is on SolidWorks-PC in
+`C:\Users\will\AppData\Local\PeetSwExport\out-all-fmt9`, and a copy in `peetcad-imports\exports\v9-fs11` (with the
+few templates no longer on the NAS copied in from older exports: see its `FILLED-FROM-OLDER-EXPORTS.txt`).
+Which equations SolidWorks applies is decided in `equation-state.js`: don't go by an equation's `disabled`. Keep copies out of `%TEMP%`, which Windows empties.
 
 It is a tool for the migration, not a feature of PeetCAD: the export is SolidWorks' own
 feature data under SolidWorks' own names, and an importer inside `peet` would tie

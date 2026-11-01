@@ -1627,6 +1627,27 @@ impl Assembly {
                 e.expression = x;
             }
         }
+        // A component pattern's count and spacing read components too (Gear Tray Assembly's
+        // IIF("Height@Base@Gear tray<1>.Part" > 1100, 3, 2))
+        let rename_scalar = |s: &mut Scalar| {
+            if let Some(x) = s.expression.as_deref().and_then(rename) {
+                s.expression = Some(x);
+            }
+        };
+        for p in &mut self.patterns {
+            match &mut std::sync::Arc::make_mut(p).kind {
+                PatternKind::Linear { first, second } => {
+                    for step in std::iter::once(first).chain(second.as_mut()) {
+                        rename_scalar(&mut step.spacing);
+                        rename_scalar(&mut step.count);
+                    }
+                }
+                PatternKind::Circular { angle, count, .. } => {
+                    rename_scalar(angle);
+                    rename_scalar(count);
+                }
+            }
+        }
         self.varying.rewrite_equations(rename);
     }
 

@@ -68,7 +68,7 @@ For each configuration:
     `Groups`).
   - `planeTransform` for a reference plane and `mate` (type, alignment, the entities
     mated) for a mate.
-- `equations`, with their values.
+- `equations`, with their values (which of them SolidWorks applies: see format 9).
 - `bodies` (parts): volume, area, centre of gravity, bounding box, and every face with its
   surface, the feature that made it and its name if it has one. Named edges too.
 - `components` (assemblies): each instance's file, configuration and transform, and for a
@@ -157,6 +157,28 @@ checked against the 2018 interop assemblies, and not yet run):
   (`ReferencedDisplayState2`).
 - Parts: a body's, a face's and a feature's own `appearance` where it has one (`HasMaterialPropertyValues`).
 
+Added in format 9 (equations in force, and linear patterns up to a reference; run on SolidWorks 2018 SP5,
+revision 26.5):
+
+- Per configuration, each equation has `suppressed` (`IEquationMgr.Suppression`: suppressed in this configuration)
+  and `configurationOption` (`GetConfigurationOption`, swInConfigurationOpts_e: 1 this configuration, 2 all, 3 the
+  ones named), and the configuration has `disabledEquationCount` (`GetDisabledEquationCount`), `equationStatus`
+  (`Status`) and `automaticSolveOrder`. `disabled` (`IEquationMgr.Disabled`) is still written, but don't go by
+  it: SolidWorks 2018 gives true for every equation but the first, in every document, where
+  `GetDisabledEquationCount` is 0 and SolidWorks applies them all (the jobs' parts have the values they give).
+  A disabled equation is not in the list at all (`GetCount`, `Equation[i]`): the count is of those, and is 4
+  where one equation is listed (Escutcheon Surround Removable). So every equation listed is in force unless it is
+  suppressed in the configuration (`tools/sw-import/equation-state.js`). An equation of one configuration only (`configurationOption` 1) has its
+  own text in that configuration's list (Door Stiffener D's `"D4@Sketch12"`).
+- A part's linear pattern has `editSelections`: what editing it (Edit Feature) selects, each with its `type`
+  (swSelectType_e), `mark` and `entity`; the edit is cancelled. SolidWorks 2018 has the pattern's "up to
+  reference" but no API for it (`D1EndCondition` and the rest are from 2019, and are listed in `unreadable`): the
+  reference is the selection marked 0x200000 (2097152). Where it is also the second direction's edge it is listed
+  once, with mark 2. Its offset is the pattern's dimension D5; which of the spacing (D3) and the count (D1) is
+  kept is the one SolidWorks has driving (the other is driven, `drivenState` 1, with no equation on it). Which way
+  the offset goes is not given. Read for every pattern not suppressed in the configuration, unless
+  `--no-selections`.
+
 Every read is guarded: what fails is logged and left out.
 
 A configuration SolidWorks made for the flat pattern (`…SM-FLAT-PATTERN`) has its bodies
@@ -213,7 +235,7 @@ Run against SolidWorks 2026 on the whole template library (201 parts, 29 assembl
 all complete, in about 80 minutes, twice. The flat sizes in the DXF files agree with the
 flat-pattern configurations' bodies and with the bend deduction by hand.
 
-`formatVersion` is 8 (6 to 8 are described above). What each earlier version added:
+`formatVersion` is 9 (6 to 9 are described above). What each earlier version added:
 
 - **2:** a definition has its `Is…` methods (`IsBossFeature` is the only thing that tells a
   boss-extrude from a cut-extrude; a part's first extrude is `IsBaseExtrude`) and its

@@ -114,6 +114,67 @@ fn the_spacing_follows_the_reference_when_the_count_is_given() {
 }
 
 #[test]
+fn a_count_an_expression_gives_is_rounded_as_solidworks_rounds_it() {
+    // SolidWorks' Back Wall: "D1@LPattern1" = ("Base Height" - 50) / 250, 7.8 at 2000 mm, is 8
+    let mut doc = plate();
+    ok(
+        &mut doc,
+        json!({"op":"set_parameter", "name":"holes", "value":"2.6"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op":"linear_pattern", "features":["Cut-Extrude1"], "direction":"x", "count":"holes",
+               "up_to":{"point":{"at":[50,50,0]}}, "up_to_offset":5, "up_to_keeps":"count"}),
+    );
+    assert_holes(&doc, 3);
+    ok(
+        &mut doc,
+        json!({"op":"set_parameter", "name":"holes", "value":"3.4"}),
+    );
+    assert_holes(&doc, 3);
+}
+
+#[test]
+fn a_seed_that_left_no_faces_of_its_own_is_where_its_sketch_puts_it() {
+    // A sheet cut on a hole already there makes no faces of its own (SolidWorks' Gland
+    // Plate patterns a hole that sits on another pattern's corner hole): it is patterned
+    // from where its sketch puts it, as the first cut is from its faces
+    let sheet = |seed: &str| {
+        let mut doc = Document::default();
+        for op in [
+            json!({"op":"sketch", "on":"top", "draw":[{"type":"rectangle", "from":[-50,-50], "to":[50,50]}]}),
+            json!({"op":"base_flange", "sketch":"Sketch1", "thickness":4}),
+            json!({"op":"sketch", "name":"First", "on":{"feature":"Base-Flange1", "side":"top"}, "draw":[{"type":"circle", "center":[15,0], "radius":1}]}),
+            json!({"op":"sheet_cut", "name":"First cut", "sketch":"First"}),
+            json!({"op":"sketch", "name":"Again", "on":{"feature":"Base-Flange1", "side":"top"}, "draw":[{"type":"circle", "center":[15,0], "radius":1}]}),
+            json!({"op":"sheet_cut", "name":"Again cut", "sketch":"Again"}),
+            json!({"op":"plane", "from":"right", "distance":40, "name":"End"}),
+        ] {
+            ok(&mut doc, op);
+        }
+        assert_holes(&doc, 1);
+        ok(
+            &mut doc,
+            json!({"op":"linear_pattern", "features":[seed], "direction":"x", "spacing":5,
+                   "up_to":{"plane":"End"}, "up_to_offset":2}),
+        );
+        let status = ok(&mut doc, json!({"op":"status"}));
+        assert!(
+            status["failures"].as_array().is_none_or(Vec::is_empty),
+            "{status}"
+        );
+        holes(&doc)
+    };
+    let copied = sheet("First cut");
+    assert!(copied > 2.0, "{copied} holes");
+    let again = sheet("Again cut");
+    assert!(
+        (again - copied).abs() < 1e-6,
+        "{again} holes, where the first cut's pattern makes {copied}"
+    );
+}
+
+#[test]
 fn a_reference_behind_the_seed_says_so() {
     let mut doc = plate();
     let reply = apply_json(

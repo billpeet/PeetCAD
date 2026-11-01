@@ -12,6 +12,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { settleEquations } = require("./equation-state");
 
 // ---- Arguments ----
 
@@ -381,6 +382,7 @@ function importPart(doc, dir) {
   const dimensionsNamed = new Set(); // SolidWorks features whose sizes have been given SolidWorks' names
   const flangeEnds = new Map();  // "flange|outline sketch" -> the edge's ends and which is the PeetCAD flange's start
   let equationsLater = null;     // tries again the equations that set sizes of features imported later
+  let equationsHere = null;      // imports the equations a configuration has otherwise than the active one
   const formulas = new Set();    // the sketch dimensions (full names) whose value is a formula
   const asleep = new Set();      // SolidWorks features imported and then suppressed in every configuration
   const cornerOps = new Map();   // PeetCAD corner feature name -> the operation that made it, for corner reliefs
@@ -390,6 +392,7 @@ function importPart(doc, dir) {
   let sheet = null;             // the sheet metal settings in force
   let thickness = null;
   let asleepNow = false;         // while a feature suppressed in every configuration is built
+  const pendingCounts = new Map(); // a pattern built asleep with two copies -> SolidWorks' count, set once it is suppressed
 
   const record = (f, result, message) => report.features.push({ name: f.name, type: f.type, result, ...(message ? { message } : {}), ...(cur !== config ? { configuration: cur.name } : {}) });
   const sheetBody = () => (peet.ask({ op: "bodies" }).bodies || []).some(b => b.sheet_metal);
@@ -1456,8 +1459,11 @@ function importPart(doc, dir) {
           else if (rounds.length === 1 && rounds[0].center !== undefined && anyPoints.length === 0 && anyLines.length === 1) item = { type: "distance", of: [rounds[0].center, anyLines[0]], value };
           else if (anyPoints.length === 2) item = { type: "distance", of: anyPoints, value };
           else if (anyPoints.length === 1 && anyLines.length === 1) item = { type: "distance", of: [anyPoints[0], anyLines[0]], value };
-          else if (lines.length === 2) item = { type: "distance", of: [lines[0].start, lines[1].id], value };
-          else if (lines.length === 1 && outLines.length === 1) item = { type: "distance", of: [lines[0].start, outLines[0]], value };
+          // Between two lines SolidWorks' distance holds them parallel (it has no linear distance between lines that
+          // are not): the parallel is kept where it fits, so that the line doesn't turn about the point measured from
+          // when the sketch changes size (Gear tray bracket's Sketch14, its short sides)
+          else if (lines.length === 2) { item = { type: "distance", of: [lines[0].start, lines[1].id], value }; items.push({ type: "parallel", of: [lines[0].id, lines[1].id], also: true }); }
+          else if (lines.length === 1 && outLines.length === 1) { item = { type: "distance", of: [lines[0].start, outLines[0]], value }; items.push({ type: "parallel", of: [lines[0].id, outLines[0]], also: true }); }
           // A line's length: the dimension ties that line alone (not a line and something not found)
           else if (lines.length === 1 && all.length === 1 && (r.entities || []).length === 1) item = { type: "length", of: [lines[0].id], value };
           break;
@@ -1501,7 +1507,7 @@ function importPart(doc, dir) {
       return most;
     };
     // A relation PeetCAD makes of more than one (`with`) is kept or dropped as one
-    const clean = item => { const { sw, moves, extra, with: also, ...rest } = item; return [rest, ...(also || [])]; };
+    const clean = item => { const { sw, moves, extra, with: also, also: _also, ...rest } = item; return [rest, ...(also || [])]; };
     const keep = item => {
       if (!item.also) tally.kept++;
       if (item.extra) tally.kept += item.extra;
@@ -2656,9 +2662,31 @@ function importPart(doc, dir) {
     if (seed && seed.why) return seed;
     // The seed's centre: the middle of the box round SolidWorks' faces of what is copied
     const faces = (v.PatternFeatureArray || []).flatMap(p => p ? facesOf(p.name) : []).filter(x => x.box);
-    if (!faces.length) return { why: "the faces of what it copies are not in SolidWorks' body" };
-    const lo = [0, 1, 2].map(i => Math.min(...faces.map(x => x.box[i]))), hi = [3, 4, 5].map(i => Math.max(...faces.map(x => x.box[i])));
-    const centre = mm(lo.map((x, i) => (x + hi[i]) / 2));
+    let centre;
+    if (faces.length) {
+      const lo = [0, 1, 2].map(i => Math.min(...faces.map(x => x.box[i]))), hi = [3, 4, 5].map(i => Math.max(...faces.map(x => x.box[i])));
+      centre = mm(lo.map((x, i) => (x + hi[i]) / 2));
+    } else {
+      // SolidWorks' body names other features for them (Gland Plate's second hole): the middle of PeetCAD's faces
+      // of the seed, as built so far
+      const seedNames = new Set((v.PatternFeatureArray || []).flatMap(p => (p && made.get(p.name)) || []));
+      let at = (peet.ask({ op: "faces" }).faces || []).filter(x => (x.made_by || []).some(m => seedNames.has(m.feature)) && x.center).map(x => x.center);
+      // Or none at all where its holes are where others already are (Gland Plate's Hole2 on Hole1's corner
+      // holes, at the template's size): a hole's positions, its sketch's points
+      if (!at.length) at = (v.PatternFeatureArray || []).flatMap(p => {
+        const seed = p && byName.get(p.name);
+        if (!seed || seed.type !== "HoleWzd") return [];
+        // As the hole is imported: the first sketch with points, the hole's points of it
+        const where = (seed.sub || []).find(s => SKETCH.test(s.type) && s.sketch && !s.sketch.error && (s.sketch.points || []).length);
+        if (!where || where.sketch.is3D || !where.sketch.modelToSketch) return [];
+        const sv = (seed.definition && seed.definition.values) || {};
+        const wanted = new Set((sv.GetSketchPoints || []).filter(q => q && q.id).map(q => q.id.join(".")));
+        const sf = frameOf(where.sketch.modelToSketch);
+        return where.sketch.points.filter(q => wanted.size === 0 || wanted.has(q.id.join("."))).map(q => fromSketch(sf, q));
+      });
+      if (!at.length) return { why: "the faces of what it copies are not in SolidWorks' body" };
+      centre = [0, 1, 2].map(i => (Math.min(...at.map(x => x[i])) + Math.max(...at.map(x => x[i]))) / 2);
+    }
     const offset = (v[n + "EndRefOffset"] || 0) * MM, reverse = !!v[n + "EndRefReverseOffset"];
     const span = to.from(centre) - (seed ? seed.from(centre) : 0) - (reverse ? -offset : offset);
     const spacing = v[n + "Spacing"] * MM, count = v[n + "TotalInstances"];
@@ -2675,6 +2703,35 @@ function importPart(doc, dir) {
     if (!keepsSpacing) fields.up_to_keeps = "count";
     // Where the reference is, for finding a vertex as far along if PeetCAD's part hasn't the same one
     return { fields, at: to.across > 1 - 1e-6 ? to.at : null };
+  }
+
+  /**
+   * SolidWorks 2018 has a linear pattern's "up to reference" but no API for it (D1EndCondition and the rest are
+   * from 2019): exports from the ninth on have what editing the pattern selects (`editSelections`). There the
+   * first direction's reference has selection mark 0x200000; where it is also the second direction (Back
+   * Wall's LPattern1) it is listed once, as that. The offset is the pattern's D5. Whether the count or the
+   * spacing is kept is which of them SolidWorks has driven (set by no equation). Which way the offset goes is
+   * not given: each is tried, and SolidWorks' count and spacing settle it. As `upToReference`'s result, or null.
+   */
+  function upToFromEdit(f, v, d) {
+    const selections = (f.editSelections && f.editSelections.selections) || [];
+    if (v.D1EndCondition !== undefined || !selections.length || !d) return null;
+    const dims = f.dimensions || [];
+    const own = n => dims.find(x => x.name === n);
+    const byEquation = n => ((cur && cur.equations) || []).some(e => !e.disabled && new RegExp(`^\\s*"${n}@${f.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*=`).test(e.expression));
+    const drivenFree = n => own(n) && own(n).drivenState === 1 && !byEquation(n);
+    const spacingDriven = drivenFree("D3"), countDriven = drivenFree("D1");
+    let reference = (selections.find(s => s.mark === 0x200000) || {}).entity;
+    if (!reference && (spacingDriven || countDriven)) {
+      // Listed once, as the second direction: a straight edge square to the first
+      const e = (selections.find(s => s.mark === 2) || {}).entity;
+      if (e && e.kind === "edge" && e.curve === "line" && e.start && e.end && Math.abs(dot(unit(sub(e.end, e.start)), d)) < 1e-6) reference = e;
+    }
+    if (!reference) return null;
+    const offset = own("D5") && own("D5").valueType === 0 ? own("D5").value : 0;
+    const tried = [false, true].map(reverse => upToReference({ ...v, D1EndCondition: 1, D1EndReference: reference, D1EndRefOffset: offset,
+      D1EndRefReverseOffset: reverse, D1EndUseSpacing: !spacingDriven }, "D1", d));
+    return tried.find(r => r && r.fields) || tried[0];
   }
 
   function upToFace(end, v, sf) {
@@ -3234,6 +3291,8 @@ function importPart(doc, dir) {
       return peet.apply({ op: "suppress", feature: n, on: true, configurations: "all" }).ok;
     });
     if (built) { asleep.add(f.name); slept.set(f.name, explicit); }
+    if (built) for (const n of names) if (pendingCounts.has(n)) peet.apply({ op: "edit", feature: n, count: pendingCounts.get(n) });
+    for (const n of names || []) pendingCounts.delete(n);
     if (built && off.size) displacedBy.set(f.name, [...off]);
     for (const x of report.features.slice(before)) {
       if (x.name !== f.name) continue;
@@ -4301,7 +4360,7 @@ function importPart(doc, dir) {
         if (!exported || !fs.existsSync(exported)) return record(f, "failed", `the export of the part it inserts (${from || "unknown"}) was not found`);
         const folder = path.join(dir, doc.name + ".parts");
         fs.mkdirSync(folder, { recursive: true });
-        const inner = JSON.parse(fs.readFileSync(exported, "utf8"));
+        const inner = settleEquations(JSON.parse(fs.readFileSync(exported, "utf8")));
         inner.__file = exported;
         const theirs = importPart(inner, folder);
         report.notes.push(`${f.name} inserts ${inner.name}, imported on its own first (${theirs.verdict}).`);
@@ -4486,9 +4545,11 @@ function importPart(doc, dir) {
         const grid = (v.D2TotalInstances || 1) > 1;
         const first = direction(v.D1Axis, v.D1ReverseDirection, v.D1Spacing, !grid);
         if (!first) return record(f, "failed", "its direction was not exported");
-        const op = { op: "linear_pattern", name: f.name, features: seeds, direction: first.axis, flip: first.flip, spacing: tidy(v.D1Spacing * MM), count: v.D1TotalInstances };
+        // A suppressed pattern of one (Gear tray's LPattern1, whose equations unsuppress it and set its count when
+        // FabSys sets SectionID above 1) is made with two, and suppressed
+        const op = { op: "linear_pattern", name: f.name, features: seeds, direction: first.axis, flip: first.flip, spacing: tidy(v.D1Spacing * MM), count: asleepNow && v.D1TotalInstances < 2 ? 2 : v.D1TotalInstances };
         // SolidWorks' "up to reference" (exports from the fifth on): the count follows the part
-        const reach = upToReference(v, "D1", first.d);
+        const reach = upToReference(v, "D1", first.d) || upToFromEdit(f, v, first.d);
         if (reach && reach.fields) { Object.assign(op, reach.fields); upToPatterns.add(f.name); }
         else if (reach) report.notes.push(`${f.name} runs up to a reference in SolidWorks; it is made with SolidWorks' count, which won't follow the part: ${reach.why}.`);
         if ((v.D2TotalInstances || 1) > 1) {
@@ -4506,6 +4567,13 @@ function importPart(doc, dir) {
           Object.assign(op, { direction2: along.direction, flip2: along.flip, spacing2: along.spacing, count2: along.count });
         }
         let built = build(f, op);
+        // (its count, made two, has SolidWorks' name all the same: equations set it by that)
+        if (built.ok && op.count !== v.D1TotalInstances) {
+          const d = (f.dimensions || []).find(x => x.valueType === 2 && x.value === v.D1TotalInstances);
+          if (d) peet.apply({ op: "name_dimension", feature: built.names[0], dimension: "count", name: d.name });
+          // and then SolidWorks' count, which the pattern, suppressed, keeps (what reads it reads 1)
+          pendingCounts.set(built.names[0], v.D1TotalInstances);
+        }
         if (!built.ok && reach && reach.fields) {
           // PeetCAD's part may not have the vertex or face SolidWorks runs up to where SolidWorks has it: a vertex
           // as far along the direction does as well. Failing that, SolidWorks' count.
@@ -4812,19 +4880,40 @@ function importPart(doc, dir) {
       }
     }
     /** Imports one equation, kept if `same()` says the part is the same afterwards. Returns why not, or null. */
+    // A dimension of this part named through an instance of it in an assembly ("D1@LPattern1@Gear tray<1>.Part",
+    // written when the part was edited in context) is the part's own: SolidWorks applies it to the part
+    const ownTarget = text => {
+      const t = text.trim(), own = /^([^@]+@[^@]+)@(.+)<\d+>\.Part$/i.exec(t);
+      return own && own[2].trim().toLowerCase() === String(doc.name).toLowerCase() ? own[1] : t;
+    };
+    // Which global variable such an equation sets each dimension from (lower-cased address -> variable)
+    const selfSet = new Map();
+    for (const e of config.equations || []) {
+      const m = /^\s*"([^"]+)"\s*=\s*"([^"]+)"\s*$/.exec(e.expression);
+      if (m && !e.disabled && ownTarget(m[1]) !== m[1].trim()) selfSet.set(ownTarget(m[1]).toLowerCase(), m[2].trim());
+    }
     const importEquation = (e, same) => {
       const m = /^\s*"([^"]+)"\s*=\s*([\s\S]*)$/.exec(e.expression);
       if (!m) return "not understood";
-      const target = m[1].trim();
+      const target = ownTarget(m[1]);
       const backup = peet.file + ".before", mark = peet.script.length;
       fs.copyFileSync(peet.file, backup);
       const knownPromoted = new Map(promoted), knownGlobals = new Map(globals), knownSketches = new Set(sketches.keys());
       const forget = () => { for (const [swName, sk] of [...sketches]) if (!knownSketches.has(swName)) { sketches.delete(swName); if (report.sketches) delete report.sketches[sk.name]; } };
       const undo = why => { fs.copyFileSync(backup, peet.file); peet.script.length = mark; addresses = null; forget(); promoted.clear(); for (const [k, v] of knownPromoted) promoted.set(k, v); globals.clear(); for (const [k, v] of knownGlobals) globals.set(k, v); return why; };
+      // A dimension set in context from a variable that reads that dimension ("D1@LPattern1@Gear tray<1>.Part" =
+      // "SectionID" with "SectionID" = "D1@LPattern1"): SolidWorks lets the two go round. The variable reading the
+      // dimension holds the same: the dimension drives (the assembly sets it, as Gear Tray Assembly does), and the
+      // variable follows, as in the job's parts (SectionID 1 to 4 with the pattern's count)
+      const pairedWith = m[1].trim() !== target && selfSet.get(target.toLowerCase());
+      if (pairedWith && (config.equations || []).some(x => !x.disabled && new RegExp(`^\\s*"${pairedWith.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*=\\s*"${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*$`, "i").test(x.expression))) { undo(null); return null; }
       const t = translate(m[2]);
       if (t.failed) return undo(t.failed);
       let ok = false, why = "refused";
-      if (e.globalVariable) {
+      // A feature's suppression state set by an equation ("MiddleHingeHoles" = IIF(..., unsuppressed,
+      // suppressed)) is named by the feature alone, so the API calls it a global variable
+      const suppresses = /\b(un)?suppressed\b/i.test(m[2]) && (made.has(target) || (byName.has(target) && !e.globalVariable));
+      if (e.globalVariable && !suppresses) {
         // A variable with nothing after its `=` is 0 in SolidWorks
         ok = peet.apply({ op: "set_parameter", name: globalName(target), value: t.value || String(e.value || 0) }).ok;
         if (ok) globals.set(target, inExpression(globalName(target)));
@@ -4862,7 +4951,26 @@ function importPart(doc, dir) {
       const why = importEquation(e, () => { const after = volumeNow(); return !steady || (after && Math.abs(after - steady) <= 1e-6 * steady); });
       if (!why) { equations.imported++; continue; }
       equations.left[why] = (equations.left[why] || 0) + 1;
+      (equations.notImported = equations.notImported || []).push({ equation: e.expression.replace(/\s+/g, " ").trim(), why });
       if (why === NOT_IMPORTED) later.push(e);
+    }
+    // A global variable whose equation could not be imported (Gear tray's "SectionID" = "D1@LPattern1", a pattern
+    // suppressed in every configuration) is still there in SolidWorks, with its value, which FabSys sets and other
+    // equations read: a parameter with that value. Then what read it is tried again.
+    const NO_VARIABLE = "it reads a variable that is not defined";
+
+    for (const e of config.equations || []) {
+      const m = /^\s*"([^"]+)"\s*=/.exec(e.expression);
+      if (e.disabled || !e.globalVariable || !m || globals.has(m[1].trim()) || made.has(m[1].trim()) || typeof e.value !== "number") continue;
+      const n = globalName(m[1]);
+      if (peet.apply({ op: "set_parameter", name: n, value: String(e.value) }).ok) { globals.set(m[1].trim(), inExpression(n)); }
+    }
+    if ((equations.notImported || []).some(x => x.why === NO_VARIABLE)) for (const e of config.equations || []) {
+      const row = (equations.notImported || []).find(x => x.why === NO_VARIABLE && x.equation === e.expression.replace(/\s+/g, " ").trim());
+      if (!row || importEquation(e, () => { const after = volumeNow(); return !steady || (after && Math.abs(after - steady) <= 1e-6 * steady); })) continue;
+      equations.imported++;
+      equations.notImported = equations.notImported.filter(x => x !== row);
+      if (!--equations.left[NO_VARIABLE]) delete equations.left[NO_VARIABLE];
     }
     if (fs.existsSync(peet.file + ".before")) fs.unlinkSync(peet.file + ".before");
     // A disabled global variable is still there in SolidWorks, with the value it kept, and FabSys sets it by
@@ -4879,6 +4987,8 @@ function importPart(doc, dir) {
     // then: kept if no configuration changes
     equationsLater = () => {
       if (!later.length) return;
+      // (the sizes named since are addresses now)
+      addresses = null;
       const shown = peet.ask({ op: "status" }).configuration;
       const volumes = () => {
         const list = (peet.ask({ op: "configurations" }).configurations || []).map(c => c.name);
@@ -4889,9 +4999,68 @@ function importPart(doc, dir) {
       for (const e of later) {
         const before = volumes();
         const why = importEquation(e, () => volumes().every((v, i) => v === before[i] || (v && before[i] && Math.abs(v - before[i]) <= 1e-6 * before[i])));
-        if (why) continue;
+        if (why) { const row = (equations.notImported || []).find(x => x.equation === e.expression.replace(/\s+/g, " ").trim()); if (row && why !== row.why) row.later = why; continue; }
         equations.imported++;
+        equations.notImported = (equations.notImported || []).filter(x => x.equation !== e.expression.replace(/\s+/g, " ").trim());
         if (!--equations.left[NOT_IMPORTED]) delete equations.left[NOT_IMPORTED];
+      }
+      if (fs.existsSync(peet.file + ".before")) fs.unlinkSync(peet.file + ".before");
+    };
+    // An equation another configuration has otherwise than the active one (SolidWorks' "This configuration":
+    // Door Stiffener D's "D4@Sketch12" is "Width@Sketch1"-215 in Default and 15 in RightHinge) is imported for
+    // that configuration alone. The configuration's own verdict says whether it then agrees with SolidWorks.
+    const suppressionParameters = new Map();   // a feature whose suppression rule differs between configurations -> its parameter
+    equationsHere = (c, entry) => {
+      const parse = e => /^\s*"([^"]+)"\s*=\s*([\s\S]*)$/.exec(e.expression);
+      const norm = t => t.replace(/\s+/g, "");
+      const home = new Map();
+      for (const e of config.equations || []) { const m = parse(e); if (m && !e.disabled) home.set(m[1].trim(), norm(m[2])); }
+      for (const e of c.equations || []) {
+        const m = parse(e);
+        if (!m || e.disabled) continue;
+        const target = m[1].trim();
+        if (home.get(target) === norm(m[2])) continue;
+        const what = e.expression.replace(/\s+/g, " ").trim();
+        const t = translate(m[2]);
+        if (t.failed) { entry.missing.push(`${what}: ${t.failed}`); continue; }
+        let reply;
+        if (/\b(un)?suppressed\b/i.test(m[2]) && made.has(target)) {
+          // A feature's suppression rule of its own here (Escutcheon's "Hinge Holes LHS Mid" is "suppressed" in
+          // HingeRight and IIF(…) in HingeLeft): the feature follows a parameter, whose expression is the rule of
+          // each configuration
+          const names = made.get(target);
+          let p = suppressionParameters.get(target);
+          if (!p) {
+            p = ident(target) + "_suppressed";
+            const ruled = (peet.ask({ op: "feature", feature: names[0] }) || {});
+            const now = ruled.suppression_expression || (ruled.manual_suppressed ? "1" : "0");
+            const made_ = peet.apply({ op: "set_parameter", name: p, value: now, configurations: "all" }).ok
+              && names.every(n => peet.apply({ op: "set_suppression_expression", feature: n, value: p }).ok);
+            if (!made_) { entry.missing.push(`${what}: its parameter could not be made`); continue; }
+            suppressionParameters.set(target, p);
+            // The active configuration's own rule, where the feature was imported after its equations were (only
+            // live in another configuration: Escutcheon's "Hinge Holes LHS Mid" = "suppressed" in HingeRight)
+            const own = (config.equations || []).find(x => !x.disabled && (/^\s*"([^"]+)"\s*=/.exec(x.expression) || [])[1] === target);
+            const ownRule = own && translate(/^\s*"[^"]+"\s*=\s*([\s\S]*)$/.exec(own.expression)[1]);
+            if (ownRule && ownRule.value && peet.apply({ op: "set_parameter", name: p, value: ownRule.value, configurations: config.name }).ok) {
+              const row = (equations.notImported || []).find(x => x.equation === own.expression.replace(/\s+/g, " ").trim());
+              if (row) {
+                equations.notImported = equations.notImported.filter(x => x !== row);
+                equations.imported++;
+                if (!--equations.left[row.why]) delete equations.left[row.why];
+              }
+            }
+          }
+          reply = peet.apply({ op: "set_parameter", name: p, value: t.value, configurations: c.name });
+        } else if (/\b(un)?suppressed\b/i.test(m[2])) { entry.missing.push(`${what}: it suppresses something that was not imported`); continue; }
+        else if (e.globalVariable) reply = peet.apply({ op: "set_parameter", name: globalName(target), value: t.value || String(e.value || 0), configurations: c.name });
+        else if (target.split("@").length === 2 && (hasAddress(target) || sheetSize(target))) {
+          const set = value => peet.apply({ op: "set", name: target, value, configurations: [c.name] });
+          reply = set(t.value);
+          if (!reply.ok && /needs a (plain )?number, but the expression gives a length/.test(reply.error || "")) reply = set(`(${t.value}) / 1mm`);
+        } else { entry.missing.push(`${what}: it sets a value PeetCAD's part has no address for`); continue; }
+        if (reply.ok) { entry.equations = (entry.equations || 0) + 1; equations.otherConfigurations = (equations.otherConfigurations || 0) + 1; }
+        else entry.missing.push(`${what}: ${reply.error}`);
       }
       if (fs.existsSync(peet.file + ".before")) fs.unlinkSync(peet.file + ".before");
     };
@@ -5130,6 +5299,7 @@ function importPart(doc, dir) {
       // Equations that set sizes of the features imported for other configurations
       nameDimensions(false);
       if (equationsLater) equationsLater();
+      if (equationsHere) for (const other of others) if (entries.has(other)) equationsHere(other, entries.get(other));
       for (const other of others) {
         const entry = entries.get(other);
         if (!entry || !peet.apply({ op: "configuration", configuration: other.name }).ok) continue;
@@ -5276,7 +5446,7 @@ if (jobs > 1 && chosen.length > 1) {
   });
 } else {
 for (const file of chosen) {
-  const doc = JSON.parse(fs.readFileSync(file, "utf8"));
+  const doc = settleEquations(JSON.parse(fs.readFileSync(file, "utf8")));
   if (doc.documentType !== "part") continue;
   doc.__file = file;
   const started = Date.now();

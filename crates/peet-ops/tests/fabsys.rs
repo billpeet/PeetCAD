@@ -441,6 +441,38 @@ fn a_patterns_copies_follow_their_replaced_original() {
 }
 
 #[test]
+fn a_patterns_count_follows_a_replaced_component_it_reads() {
+    // Gear Tray Assembly's bracket pattern counts IIF("Height@Base@Gear tray<1>.Part" > 1100,
+    // 3, 2); FabSys replaces Gear tray-1 with the job's copy, and the count reads that
+    let dir = temp("pattern-count");
+    let tray = block(&dir, "Gear tray.peet");
+    let bracket = block(&dir, "Gear tray bracket.peet");
+    let copy = dir.join("J1 MS2 Gear tray 1.peet");
+    std::fs::copy(&tray, &copy).unwrap();
+    let mut doc = Document::default();
+    ok(&mut doc, json!({"op": "new", "assembly": true}));
+    ok(&mut doc, json!({"op": "insert", "path": tray}));
+    ok(&mut doc, json!({"op": "insert", "path": bracket}));
+    ok(
+        &mut doc,
+        json!({"op": "component_pattern", "components": ["Gear tray bracket-1"], "type": "linear", "direction": "x", "spacing": 100,
+               "count": "IIF(\"depth@Extrude1@Gear tray<1>.Part\" > 5, 3, 2)"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "replace", "component": "Gear tray-1", "path": copy, "link": true}),
+    );
+    let status = ok(&mut doc, json!({"op": "status"}));
+    assert!(
+        status["failures"].as_array().is_none_or(Vec::is_empty),
+        "{status}"
+    );
+    let all = ok(&mut doc, json!({"op": "components"}));
+    component(&all, "Gear tray bracket-3");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn sheet_metal_is_set_on_a_part_and_on_a_components_part() {
     let dir = temp("sheet");
     let path = plate(&dir, "Panel.peet");

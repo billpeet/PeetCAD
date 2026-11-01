@@ -259,8 +259,10 @@ rail whose length differs between configurations), give the linear pattern `up_t
 (a vertex or reference point) across the direction, ahead of the seed. This is
 SolidWorks' "Up to reference". The copies span the distance along the direction from
 the seed's centre to the reference, less `up_to_offset`. The seed's centre is the middle
-of the box round its faces; `up_to_seed` measures from a plane or point on the seed
-instead. With `up_to_keeps` `"spacing"` (the default), `spacing` is kept and the count is
+of the box round its faces (a seed that left no faces of its own, a hole drilled where
+there is one already, is where its sketch puts it); `up_to_seed` measures from a plane
+or point on the seed instead. A `count` an expression gives is rounded, as any pattern
+count is. With `up_to_keeps` `"spacing"` (the default), `spacing` is kept and the count is
 as many copies as fit; one landing exactly at the end counts. With `"count"`, `count` is
 kept and the spacing spreads the copies evenly. `up_to_reverse` puts the last copy past
 the reference by the offset. The stored `count` (or `spacing`) is ignored while `up_to` is
