@@ -392,6 +392,7 @@ function importPart(doc, dir) {
   let sheet = null;             // the sheet metal settings in force
   let thickness = null;
   let asleepNow = false;         // while a feature suppressed in every configuration is built
+  const pendingCounts = new Map(); // a pattern built asleep with two copies -> SolidWorks' count, set once it is suppressed
 
   const record = (f, result, message) => report.features.push({ name: f.name, type: f.type, result, ...(message ? { message } : {}), ...(cur !== config ? { configuration: cur.name } : {}) });
   const sheetBody = () => (peet.ask({ op: "bodies" }).bodies || []).some(b => b.sheet_metal);
@@ -3290,6 +3291,8 @@ function importPart(doc, dir) {
       return peet.apply({ op: "suppress", feature: n, on: true, configurations: "all" }).ok;
     });
     if (built) { asleep.add(f.name); slept.set(f.name, explicit); }
+    if (built) for (const n of names) if (pendingCounts.has(n)) peet.apply({ op: "edit", feature: n, count: pendingCounts.get(n) });
+    for (const n of names || []) pendingCounts.delete(n);
     if (built && off.size) displacedBy.set(f.name, [...off]);
     for (const x of report.features.slice(before)) {
       if (x.name !== f.name) continue;
@@ -4568,6 +4571,8 @@ function importPart(doc, dir) {
         if (built.ok && op.count !== v.D1TotalInstances) {
           const d = (f.dimensions || []).find(x => x.valueType === 2 && x.value === v.D1TotalInstances);
           if (d) peet.apply({ op: "name_dimension", feature: built.names[0], dimension: "count", name: d.name });
+          // and then SolidWorks' count, which the pattern, suppressed, keeps (what reads it reads 1)
+          pendingCounts.set(built.names[0], v.D1TotalInstances);
         }
         if (!built.ok && reach && reach.fields) {
           // PeetCAD's part may not have the vertex or face SolidWorks runs up to where SolidWorks has it: a vertex
@@ -4896,6 +4901,12 @@ function importPart(doc, dir) {
       const knownPromoted = new Map(promoted), knownGlobals = new Map(globals), knownSketches = new Set(sketches.keys());
       const forget = () => { for (const [swName, sk] of [...sketches]) if (!knownSketches.has(swName)) { sketches.delete(swName); if (report.sketches) delete report.sketches[sk.name]; } };
       const undo = why => { fs.copyFileSync(backup, peet.file); peet.script.length = mark; addresses = null; forget(); promoted.clear(); for (const [k, v] of knownPromoted) promoted.set(k, v); globals.clear(); for (const [k, v] of knownGlobals) globals.set(k, v); return why; };
+      // A dimension set in context from a variable that reads that dimension ("D1@LPattern1@Gear tray<1>.Part" =
+      // "SectionID" with "SectionID" = "D1@LPattern1"): SolidWorks lets the two go round. The variable reading the
+      // dimension holds the same: the dimension drives (the assembly sets it, as Gear Tray Assembly does), and the
+      // variable follows, as in the job's parts (SectionID 1 to 4 with the pattern's count)
+      const pairedWith = m[1].trim() !== target && selfSet.get(target.toLowerCase());
+      if (pairedWith && (config.equations || []).some(x => !x.disabled && new RegExp(`^\\s*"${pairedWith.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*=\\s*"${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*$`, "i").test(x.expression))) { undo(null); return null; }
       const t = translate(m[2]);
       if (t.failed) return undo(t.failed);
       let ok = false, why = "refused";
@@ -4903,12 +4914,8 @@ function importPart(doc, dir) {
       // suppressed)) is named by the feature alone, so the API calls it a global variable
       const suppresses = /\b(un)?suppressed\b/i.test(m[2]) && (made.has(target) || (byName.has(target) && !e.globalVariable));
       if (e.globalVariable && !suppresses) {
-        // A variable with nothing after its `=` is 0 in SolidWorks. One that reads a dimension an equation sets
-        // from it ("SectionID" = "D1@LPattern1" with "D1@LPattern1@Gear tray<1>.Part" = "SectionID") is its value:
-        // SolidWorks lets the two go round, PeetCAD can't; FabSys's SetGlobalVariable replaces it with a number.
-        const read = /^"([^"]+)"$/.exec((t.value || "").trim());
-        const circular = read && selfSet.get(read[1].toLowerCase()) === target;
-        ok = peet.apply({ op: "set_parameter", name: globalName(target), value: circular ? String(e.value) : t.value || String(e.value || 0) }).ok;
+        // A variable with nothing after its `=` is 0 in SolidWorks
+        ok = peet.apply({ op: "set_parameter", name: globalName(target), value: t.value || String(e.value || 0) }).ok;
         if (ok) globals.set(target, inExpression(globalName(target)));
       } else if (/suppressed/i.test(m[2])) {
         const names = made.get(target);
