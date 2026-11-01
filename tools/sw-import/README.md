@@ -117,7 +117,10 @@ configuration), features suppressed differently, dimensions with the same addres
 made geometry on one side only (where a smart component's cut went). Mates of the root and of each sub-assembly
 both have, by FabSys's names (`Coincident_<component>_<face>_…`), present on both and solving alike (a mate of a
 suppressed component counts as suppressed, and only the active configuration's state is used: an export's mates
-of other configurations are stale).
+of other configurations are stale). A flat size is not compared where SolidWorks' flat pattern fails (its DXF is
+then of the folded part). A SolidWorks mate with no entity at one end, which SolidWorks reports failing or gives as
+the assembly itself, mates nothing SolidWorks has: missing in PeetCAD, it is counted apart
+(`dangling_in_solidworks`), not as missing.
 
 Instance numbers are not compared. SolidWorks numbers a second FabSys run into one assembly on from the instances
 deleted before (`-2`, `-11`…) where a fresh PeetCAD run numbers from `-1`, so components are paired level by level
