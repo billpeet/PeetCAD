@@ -1458,8 +1458,11 @@ function importPart(doc, dir) {
           else if (rounds.length === 1 && rounds[0].center !== undefined && anyPoints.length === 0 && anyLines.length === 1) item = { type: "distance", of: [rounds[0].center, anyLines[0]], value };
           else if (anyPoints.length === 2) item = { type: "distance", of: anyPoints, value };
           else if (anyPoints.length === 1 && anyLines.length === 1) item = { type: "distance", of: [anyPoints[0], anyLines[0]], value };
-          else if (lines.length === 2) item = { type: "distance", of: [lines[0].start, lines[1].id], value };
-          else if (lines.length === 1 && outLines.length === 1) item = { type: "distance", of: [lines[0].start, outLines[0]], value };
+          // Between two lines SolidWorks' distance holds them parallel (it has no linear distance between lines that
+          // are not): the parallel is kept where it fits, so that the line doesn't turn about the point measured from
+          // when the sketch changes size (Gear tray bracket's Sketch14, its short sides)
+          else if (lines.length === 2) { item = { type: "distance", of: [lines[0].start, lines[1].id], value }; items.push({ type: "parallel", of: [lines[0].id, lines[1].id], also: true }); }
+          else if (lines.length === 1 && outLines.length === 1) { item = { type: "distance", of: [lines[0].start, outLines[0]], value }; items.push({ type: "parallel", of: [lines[0].id, outLines[0]], also: true }); }
           // A line's length: the dimension ties that line alone (not a line and something not found)
           else if (lines.length === 1 && all.length === 1 && (r.entities || []).length === 1) item = { type: "length", of: [lines[0].id], value };
           break;
@@ -1503,7 +1506,7 @@ function importPart(doc, dir) {
       return most;
     };
     // A relation PeetCAD makes of more than one (`with`) is kept or dropped as one
-    const clean = item => { const { sw, moves, extra, with: also, ...rest } = item; return [rest, ...(also || [])]; };
+    const clean = item => { const { sw, moves, extra, with: also, also: _also, ...rest } = item; return [rest, ...(also || [])]; };
     const keep = item => {
       if (!item.also) tally.kept++;
       if (item.extra) tally.kept += item.extra;
