@@ -524,12 +524,28 @@ impl Engine {
                 );
                 continue;
             }
+            // A linear pattern up to a reference: its spacing (or count) as worked out from
+            // where the reference is, before its copies are made
+            let worked_out = match &feature.kind {
+                FeatureKind::Pattern(p) => Ctx {
+                    model,
+                    bodies: &run.bodies,
+                    states: &run.states,
+                }
+                .up_to_values(&p.def, &p.seeds),
+                _ => [None, None],
+            };
             let write_back = self.build(model, &feature, params_key, &mut run);
             if let Some((sketch, placement)) = write_back
                 && let Some(s) = model.feature_mut(id).and_then(Feature::sketch_mut)
             {
                 s.sketch = sketch;
                 s.placement = placement;
+            }
+            if worked_out.iter().any(Option::is_some)
+                && run.states.get(&id).is_some_and(|s| s.status.is_built())
+            {
+                set_worked_out(model, id, worked_out);
             }
         }
         self.cache.retain(|id, _| run.states.contains_key(id));
@@ -2267,6 +2283,36 @@ struct Run {
     dimensions_key: u64,
 }
 
+/// Puts the spacing (or count) a linear pattern up to a reference worked out into the
+/// pattern, where it follows from the reference (its other value is the one given), as
+/// SolidWorks shows the pattern's dimension at the value its copies are placed at: Back
+/// Wall's `D3@LPattern1` is the spacing over the wall's height, not the one last stored.
+/// A value an expression gives is left alone.
+fn set_worked_out(model: &mut Model, id: FeatureId, worked_out: [Option<(f64, u32)>; 2]) {
+    use crate::feature::PatternKeeps;
+    let Some(FeatureKind::Pattern(p)) = model.feature_mut(id).map(|f| &mut f.kind) else {
+        return;
+    };
+    let PatternDef::Linear { first, second } = &mut p.def else {
+        return;
+    };
+    for (d, w) in [Some(first), second.as_mut()].into_iter().zip(worked_out) {
+        let (Some(d), Some((spacing, count))) = (d, w) else {
+            continue;
+        };
+        let Some(keeps) = d.up_to.as_ref().map(|u| u.keeps) else {
+            continue;
+        };
+        let target = match keeps {
+            PatternKeeps::Count => (&mut d.spacing, spacing),
+            PatternKeeps::Spacing => (&mut d.count, f64::from(count)),
+        };
+        if target.0.expression.is_none() && target.0.value != target.1 {
+            target.0.value = target.1;
+        }
+    }
+}
+
 fn reused(state: &FeatureState) -> FeatureState {
     FeatureState {
         rebuilt: false,
@@ -3025,6 +3071,26 @@ impl<'m> Ctx<'m, '_> {
                     .to_owned(),
             )
         }
+    }
+
+    /// The spacing and count of each direction of a linear pattern that runs up to a
+    /// reference, worked out as its copies are placed (first direction, second): what
+    /// SolidWorks shows as the pattern's dimensions. `None` where a direction doesn't run
+    /// up to a reference, or can't be worked out.
+    fn up_to_values(&self, def: &PatternDef, seeds: &[FeatureId]) -> [Option<(f64, u32)>; 2] {
+        let PatternDef::Linear { first, second } = def else {
+            return [None, None];
+        };
+        let one = |d: &crate::feature::LinearDirection, what: &str| {
+            let u = d.up_to.as_ref()?;
+            let axis = self.axis(&d.direction).ok()?;
+            let dir = axis.dir * if d.flip { -1.0 } else { 1.0 };
+            self.up_to_reference(u, d, dir, seeds, what).ok()
+        };
+        [
+            one(first, "direction"),
+            second.as_ref().and_then(|d| one(d, "second direction")),
+        ]
     }
 
     /// Where a pattern's copies go (the original excluded).
