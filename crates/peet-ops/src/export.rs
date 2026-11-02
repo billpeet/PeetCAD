@@ -225,13 +225,11 @@ pub fn export_bytes(
             let Some(sheet) = &sheet_body.sheet else {
                 return Err("That body is not sheet metal.".to_owned());
             };
-            if let Some(why) = sheet.layout.unfold_error() {
-                return Err(why);
-            }
-            out.insert(
-                "flat_size".to_owned(),
-                point2_out(sheet.report().flat_size, units),
-            );
+            let report = sheet.report();
+            let Some(size) = report.flat_size else {
+                return Err(report.no_flat_pattern.unwrap_or_default());
+            };
+            out.insert("flat_size".to_owned(), point2_out(size, units));
             (peet_io::dxf::flat_pattern(sheet).into_bytes(), "dxf")
         }
         Format::Step => {

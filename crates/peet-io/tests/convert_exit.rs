@@ -84,8 +84,8 @@ fn enclosure_round_trips_through_step_and_unfolds_again() {
     let (_, sample) = peet_model::samples::enclosure();
     let original = sample.evaluation().bodies[0].clone();
     let want = original.sheet.as_ref().expect("sheet metal").report();
-    assert!((want.flat_size.x - FLAT.0).abs() < 1e-6);
-    assert!((want.flat_size.y - FLAT.1).abs() < 1e-6);
+    assert!((want.flat_size.unwrap().x - FLAT.0).abs() < 1e-6);
+    assert!((want.flat_size.unwrap().y - FLAT.1).abs() < 1e-6);
 
     let (mut model, mut engine) = through_step("Enclosure Panel", &original.solid);
     let imported = engine.evaluation().bodies[0].clone();
@@ -108,9 +108,19 @@ fn enclosure_round_trips_through_step_and_unfolds_again() {
 
     // The same blank, bends and cutouts as the part had before it left.
     let got = sheet.report();
-    assert!((got.flat_size.x - FLAT.0).abs() < 1e-6, "{}", got.flat_size);
-    assert!((got.flat_size.y - FLAT.1).abs() < 1e-6, "{}", got.flat_size);
-    assert!((got.flat_area - want.flat_area).abs() < 1e-6 * want.flat_area);
+    assert!(
+        (got.flat_size.unwrap().x - FLAT.0).abs() < 1e-6,
+        "{:?}",
+        got.flat_size
+    );
+    assert!(
+        (got.flat_size.unwrap().y - FLAT.1).abs() < 1e-6,
+        "{:?}",
+        got.flat_size
+    );
+    assert!(
+        (got.flat_area.unwrap() - want.flat_area.unwrap()).abs() < 1e-6 * want.flat_area.unwrap()
+    );
     assert_eq!(got.bends.len(), 4);
     assert_eq!(got.cutouts, want.cutouts);
     assert!((got.thickness - 1.5).abs() < 1e-9);

@@ -85,14 +85,14 @@ fn chassis_builds_and_folds_to_size() {
     close(b.max.z, cs::WALL);
     // Flat size.
     let report = sheet.report();
-    close(report.flat_size.x, cs::WIDTH + 2.0 * side());
+    close(report.flat_size.unwrap().x, cs::WIDTH + 2.0 * side());
     close(
-        report.flat_size.y,
+        report.flat_size.unwrap().y,
         cs::DEPTH + side() - (hem_radius() + cs::THICKNESS) + hem_allowance() + cs::HEM
             - (hem_radius() + cs::THICKNESS),
     );
-    close(report.flat_size.x, 333.571_680_263_507_9);
-    close(report.flat_size.y, 215.876_415_172_927);
+    close(report.flat_size.unwrap().x, 333.571_680_263_507_9);
+    close(report.flat_size.unwrap().y, 215.876_415_172_927);
     // Seven bends: two on each rimmed side, and the hem.
     assert_eq!(report.bends.len(), 7);
     assert_eq!(report.bends.iter().filter(|b| b.angle > 179.0).count(), 1);

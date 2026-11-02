@@ -4,7 +4,7 @@ use peet_math::DVec2;
 
 use crate::build::SheetBody;
 use crate::layout::Origin;
-use crate::settings::BendModel;
+use crate::settings::{BendModel, BendValues};
 
 /// One bend of the flat pattern.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,10 +33,15 @@ pub struct Report {
     pub model: BendModel,
     /// Bends in the order they were made (a sensible first guess at a bending order).
     pub bends: Vec<BendRow>,
-    /// Size of the flat blank's bounding box (flat X and Y).
-    pub flat_size: DVec2,
-    /// Area of the flat blank (cutouts removed).
-    pub flat_area: f64,
+    /// Size of the flat blank's bounding box (flat X and Y). None when the sheet has no
+    /// flat pattern ([`Report::no_flat_pattern`] says why).
+    pub flat_size: Option<DVec2>,
+    /// Area of the flat blank (cutouts removed). None when there is no flat pattern.
+    pub flat_area: Option<f64>,
+    /// Why the sheet can't be unfolded, if it can't: a bend whose allowance works out too
+    /// small. It is folded all the same, as SolidWorks folds it, but the blank it is cut
+    /// from is unknown, as SolidWorks' flat pattern fails.
+    pub no_flat_pattern: Option<String>,
     /// Separate pieces of the blank (1 for a sound part).
     pub pieces: usize,
     pub cutouts: usize,
@@ -56,26 +61,38 @@ impl SheetBody {
                     .map_or(0.0, |l| {
                         l.segments.iter().map(|s| s[0].distance(s[1])).sum()
                     });
+                // A bend too shallow to unfold is folded with a stand-in allowance: its
+                // row gives the bend model's own numbers, which say why.
+                let v = BendValues {
+                    allowance: b.values.unfoldable.unwrap_or(b.values.allowance),
+                    ..b.values
+                };
                 BendRow {
                     piece,
                     origin: self.layout.pieces[piece].origin,
                     up: b.up,
-                    angle: b.values.angle.to_degrees(),
-                    radius: b.values.radius,
-                    k_factor: b.values.k_factor(),
-                    allowance: b.values.allowance,
-                    deduction: b.values.deduction(),
+                    angle: v.angle.to_degrees(),
+                    radius: v.radius,
+                    k_factor: v.k_factor(),
+                    allowance: v.allowance,
+                    deduction: v.deduction(),
                     length,
                 }
             })
             .collect();
-        let (lo, hi) = self.flat_bounds();
+        let no_flat_pattern = self.layout.unfold_error();
+        let flat = no_flat_pattern.is_none().then(|| {
+            let (lo, hi) = self.flat_bounds();
+            let size = if lo.x <= hi.x { hi - lo } else { DVec2::ZERO };
+            (size, peet_kernel::validate::measure::volume(&self.flat) / t)
+        });
         Report {
             thickness: t,
             model: self.layout.settings.model,
             bends,
-            flat_size: if lo.x <= hi.x { hi - lo } else { DVec2::ZERO },
-            flat_area: peet_kernel::validate::measure::volume(&self.flat) / t,
+            flat_size: flat.map(|f| f.0),
+            flat_area: flat.map(|f| f.1),
+            no_flat_pattern,
             pieces: self.outline.iter().filter(|l| l.outer).count(),
             cutouts: self.outline.iter().filter(|l| !l.outer).count(),
         }
@@ -86,10 +103,20 @@ impl Report {
     /// The report as tab-separated text (pastes into a spreadsheet), with owners named by
     /// `name`.
     pub fn to_text(&self, name: impl Fn(Origin) -> String) -> String {
-        let mut s = format!(
-            "Flat size\t{:.3} x {:.3} mm\nArea\t{:.1} mm²\nThickness\t{:.3} mm\nCutouts\t{}\n\n",
-            self.flat_size.x, self.flat_size.y, self.flat_area, self.thickness, self.cutouts
-        );
+        let mut s = match (self.flat_size, self.flat_area) {
+            (Some(size), Some(area)) => format!(
+                "Flat size\t{:.3} x {:.3} mm\nArea\t{area:.1} mm²\n",
+                size.x, size.y
+            ),
+            _ => format!(
+                "Flat size\tNo flat pattern: {}\n",
+                self.no_flat_pattern.as_deref().unwrap_or_default()
+            ),
+        };
+        s.push_str(&format!(
+            "Thickness\t{:.3} mm\nCutouts\t{}\n\n",
+            self.thickness, self.cutouts
+        ));
         s.push_str("Bend\tFeature\tDirection\tAngle (°)\tInner radius (mm)\tK-factor\tBend allowance (mm)\tBend deduction (mm)\tLength (mm)\n");
         for (i, b) in self.bends.iter().enumerate() {
             s.push_str(&format!(

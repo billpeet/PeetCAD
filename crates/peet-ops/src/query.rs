@@ -8,7 +8,7 @@ use peet_sketch::solver::Solver;
 use peet_sketch::{Geometry, Sketch};
 use serde_json::{Map, Value, json};
 
-use crate::args::{direction_out, length_out, point2_out, point3_out, round};
+use crate::args::{direction_out, insert_flat, length_out, point2_out, point3_out, round};
 use crate::fields::FeatureArgs;
 use crate::select;
 use crate::value::GeomSel;
@@ -620,7 +620,7 @@ pub fn bodies(doc: &Document) -> Value {
             m.insert("edges".to_owned(), json!(b.solid.edges.len()));
             if let Some(sheet) = &b.sheet {
                 let r = sheet.report();
-                m.insert("flat_size".to_owned(), point2_out(r.flat_size, units));
+                insert_flat(&mut m, r.flat_size, r.no_flat_pattern.as_deref(), units);
                 m.insert("thickness".to_owned(), length_out(r.thickness, units));
                 m.insert("bends".to_owned(), json!(r.bends.len()));
             }
@@ -786,15 +786,17 @@ pub fn bend_table(doc: &Document, body: Option<usize>) -> Result<Value, String> 
             })
         })
         .collect();
-    Ok(json!({
-        "made_by": doc.model.name_of(body.origin),
-        "flat_size": point2_out(r.flat_size, units),
-        "flat_area_mm2": round(r.flat_area),
-        "thickness": length_out(r.thickness, units),
-        "pieces": r.pieces,
-        "cutouts": r.cutouts,
-        "bends": bends,
-    }))
+    let mut m = Map::new();
+    m.insert("made_by".to_owned(), json!(doc.model.name_of(body.origin)));
+    insert_flat(&mut m, r.flat_size, r.no_flat_pattern.as_deref(), units);
+    if let Some(area) = r.flat_area {
+        m.insert("flat_area_mm2".to_owned(), json!(round(area)));
+    }
+    m.insert("thickness".to_owned(), length_out(r.thickness, units));
+    m.insert("pieces".to_owned(), json!(r.pieces));
+    m.insert("cutouts".to_owned(), json!(r.cutouts));
+    m.insert("bends".to_owned(), json!(bends));
+    Ok(Value::Object(m))
 }
 
 pub fn checks(

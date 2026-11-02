@@ -342,7 +342,7 @@ fn enclosure_panel_flat_pattern_is_dimensionally_correct() {
         assert_close(row.k_factor, K);
         assert_close(row.angle, 90.0);
     }
-    assert_close(report.flat_size.x, W + 2.0 * L - 2.0 * bd());
+    assert_close(report.flat_size.unwrap().x, W + 2.0 * L - 2.0 * bd());
 }
 
 #[test]

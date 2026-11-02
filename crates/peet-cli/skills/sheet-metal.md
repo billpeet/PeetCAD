@@ -282,8 +282,7 @@ X and y along its Z, so `[80, 12]` to `[100, 20]` is x 80 to 100, z 12 to 20.
   bend allowance of a 45° bend works out at ... it must be greater than zero to unfold
   it" (a warning) means the body's deduction is too big for that flange's angle or
   radius: the part is folded all the same, as SolidWorks folds it, but it has no flat
-  pattern (a DXF export is refused, and a flat size is not to be trusted) until you
-  give that flange its own.
+  pattern (see "Flat pattern and export") until you give that flange its own.
 
   ```jsonl
   {"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [200, 150]}]}
@@ -667,6 +666,14 @@ down through the folded part: it notches the wall over its whole height, and tak
 
 - `bend_table`: the flat size, and each bend's direction, angle, radius and allowance.
   Check the flat size against the stock.
+- A part with no flat pattern (a bend whose allowance works out at zero or less, as
+  SolidWorks' flat pattern fails for it) has no flat size: `bend_table`, `bodies` and
+  `bom` give `no_flat_pattern`, saying why, in place of `flat_size` (and `bend_table`
+  leaves out `flat_area_mm2`), the CSV bill of materials leaves the flat cells empty,
+  and a DXF export is refused with the same reason. Its row in `bend_table` gives the
+  allowance and deduction its bend model works out at (the folded part uses a stand-in),
+  so the negative allowance shows which bend to fix. Give that flange its own `bend`
+  (see edge flanges above) and the size comes back.
 - `{"op": "export", "path": "part.dxf"}` writes the flat pattern: outline, cutouts,
   bend lines and notes on separate layers, in mm. `.step` and `.stl` write the folded
   part.

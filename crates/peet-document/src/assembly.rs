@@ -230,12 +230,14 @@ impl Document {
 // ---- Bill of materials ----
 
 /// What a sheet metal part is cut from.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SheetStock {
     /// mm.
     pub thickness: f64,
-    /// The flat pattern's size, mm.
-    pub flat_size: DVec2,
+    /// The flat pattern's size, mm. None when the part has no flat pattern
+    /// (`no_flat_pattern` says why).
+    pub flat_size: Option<DVec2>,
+    pub no_flat_pattern: Option<String>,
     pub bends: usize,
 }
 
@@ -318,6 +320,7 @@ impl Document {
                     SheetStock {
                         thickness: sheet.layout.settings.thickness,
                         flat_size: report.flat_size,
+                        no_flat_pattern: report.no_flat_pattern,
                         bends: report.bends.len(),
                     }
                 });
@@ -746,9 +749,9 @@ mod tests {
         );
         assert_eq!((rows[1].material.as_deref(), rows[1].mass), (None, None));
         // The sheet metal part: what it is cut from (the blank of the Phase 4 exit part).
-        let stock = rows[2].sheet.unwrap();
+        let stock = rows[2].sheet.clone().unwrap();
         assert_eq!(stock.thickness, 1.5);
-        assert!((stock.flat_size - DVec2::new(244.356_636, 194.356_636)).length() < 1e-5);
+        assert!((stock.flat_size.unwrap() - DVec2::new(244.356_636, 194.356_636)).length() < 1e-5);
         assert_eq!(stock.bends, 4);
 
         // The top level only: a sub-assembly is one line, weighed if all its parts are.
