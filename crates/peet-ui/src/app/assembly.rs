@@ -1107,14 +1107,26 @@ impl PeetApp {
                                         .map_or_else(|| "—".to_owned(), |m| kg(m * row.quantity as f64)),
                                 );
                                 ui.label(row.sheet.as_ref().map_or_else(String::new, |s| {
-                                    format!(
-                                        "{} thick, flat {} × {} {}",
-                                        units.format_length_value(s.thickness),
-                                        units.format_length_value(s.flat_size.x),
-                                        units.format_length_value(s.flat_size.y),
-                                        units.length.suffix()
-                                    )
-                                }));
+                                    let thick = units.format_length_value(s.thickness);
+                                    match s.flat_size {
+                                        Some(f) => format!(
+                                            "{thick} thick, flat {} × {} {}",
+                                            units.format_length_value(f.x),
+                                            units.format_length_value(f.y),
+                                            units.length.suffix()
+                                        ),
+                                        None => format!(
+                                            "{thick} {} thick, no flat pattern",
+                                            units.length.suffix()
+                                        ),
+                                    }
+                                }))
+                                .on_hover_text(
+                                    row.sheet
+                                        .as_ref()
+                                        .and_then(|s| s.no_flat_pattern.as_deref())
+                                        .unwrap_or_default(),
+                                );
                                 ui.end_row();
                             }
                         });

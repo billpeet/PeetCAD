@@ -155,12 +155,12 @@ fn extruded_l_becomes_sheet_metal_and_takes_flanges_and_cuts() {
     let flat = BASE + LEG - v.deduction();
     assert_close(flat, (BASE - R - T) + v.allowance + (LEG - R - T));
     let (short, long) = (
-        report.flat_size.x.min(report.flat_size.y),
-        report.flat_size.x.max(report.flat_size.y),
+        report.flat_size.unwrap().x.min(report.flat_size.unwrap().y),
+        report.flat_size.unwrap().x.max(report.flat_size.unwrap().y),
     );
     assert_close(short, DEPTH);
     assert_close(long, flat);
-    assert_close(report.flat_area, DEPTH * flat);
+    assert_close(report.flat_area.unwrap(), DEPTH * flat);
     // The body is still the extrusion's, and its faces are named after the conversion.
     assert_eq!(body.origin, p.model.features().nth(1).unwrap().id);
     assert!(
@@ -187,7 +187,7 @@ fn extruded_l_becomes_sheet_metal_and_takes_flanges_and_cuts() {
     let report = sheet.report();
     assert_eq!(report.bends.len(), 2);
     // The default flange is 20 mm, material inside: the blank grows by 20 − BD.
-    let long = report.flat_size.x.max(report.flat_size.y);
+    let long = report.flat_size.unwrap().x.max(report.flat_size.unwrap().y);
     assert_close(long, flat + 20.0 - v.deduction());
     // The flange uses the radius the conversion found.
     assert!(report.bends.iter().all(|b| (b.radius - R).abs() < 1e-9));
@@ -213,7 +213,7 @@ fn extruded_l_becomes_sheet_metal_and_takes_flanges_and_cuts() {
     p.assert_ok();
     assert_close(p.volume(), folded);
     let report = p.bodies()[0].sheet.as_ref().unwrap().report();
-    let long2 = report.flat_size.x.max(report.flat_size.y);
+    let long2 = report.flat_size.unwrap().x.max(report.flat_size.unwrap().y);
     assert_close(long - long2, 2.0 * FRAC_PI_2 * (K - 0.3) * T);
 }
 
@@ -226,7 +226,7 @@ fn conversion_follows_the_solid() {
     p.assert_ok();
     let flat = |p: &Part| {
         let r = p.bodies()[0].sheet.as_ref().unwrap().report();
-        r.flat_size.x.max(r.flat_size.y)
+        r.flat_size.unwrap().x.max(r.flat_size.unwrap().y)
     };
     let v = right_angle();
     assert_close(flat(&p), BASE + LEG - v.deduction());
@@ -238,7 +238,10 @@ fn conversion_follows_the_solid() {
     assert!(p.eval().state(convert).unwrap().rebuilt);
     assert_close(flat(&p), 120.0);
     let r = p.bodies()[0].sheet.as_ref().unwrap().report();
-    assert_close(r.flat_size.x.min(r.flat_size.y), BASE + LEG - v.deduction());
+    assert_close(
+        r.flat_size.unwrap().x.min(r.flat_size.unwrap().y),
+        BASE + LEG - v.deduction(),
+    );
     // Rebuilding with nothing changed reuses it.
     p.rebuild();
     assert!(!p.eval().state(convert).unwrap().rebuilt);
@@ -360,8 +363,8 @@ fn the_enclosure_comes_back_from_a_plain_solid() {
     let original_sheet = original.sheet.as_ref().expect("the sample is sheet metal");
     let want = original_sheet.report();
     // Documented in the roadmap: 244.356636 × 194.356636 mm at K = 0.44, R 2, t 1.5.
-    assert!((want.flat_size.x - 244.356636).abs() < 1e-6);
-    assert!((want.flat_size.y - 194.356636).abs() < 1e-6);
+    assert!((want.flat_size.unwrap().x - 244.356636).abs() < 1e-6);
+    assert!((want.flat_size.unwrap().y - 194.356636).abs() < 1e-6);
     let _ = sample;
 
     let mut p = Part::default();
@@ -391,16 +394,16 @@ fn the_enclosure_comes_back_from_a_plain_solid() {
     assert_close(got.thickness, 1.5);
     assert_close(sheet.layout.settings.radius, 2.0);
     assert!(
-        (got.flat_size.x - 244.356636).abs() < 1e-6,
-        "{}",
+        (got.flat_size.unwrap().x - 244.356636).abs() < 1e-6,
+        "{:?}",
         got.flat_size
     );
     assert!(
-        (got.flat_size.y - 194.356636).abs() < 1e-6,
-        "{}",
+        (got.flat_size.unwrap().y - 194.356636).abs() < 1e-6,
+        "{:?}",
         got.flat_size
     );
-    assert_close(got.flat_area, want.flat_area);
+    assert_close(got.flat_area.unwrap(), want.flat_area.unwrap());
     assert_eq!(got.cutouts, want.cutouts);
     assert_eq!(got.pieces, 1);
     // Four bends, though the slot across the right-hand one splits its faces in two.

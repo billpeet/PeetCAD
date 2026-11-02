@@ -900,7 +900,8 @@ impl PeetApp {
         } else {
             format!("{stem}.dxf")
         };
-        let size = sheet.report().flat_size;
+        // The export above refuses a sheet with no flat pattern, so it has a size here.
+        let size = sheet.report().flat_size.unwrap_or_default();
         let units = self.doc.model.parameters.units;
         match peet_platform::save_file(&name, ("DXF drawing", &["dxf"]), &text) {
             Ok(peet_platform::SaveOutcome::Saved(to)) => self.info(format!(
@@ -3098,11 +3099,20 @@ impl PeetApp {
                         .spacing([12.0, 4.0])
                         .show(ui, |ui| {
                             ui.label("Flat size");
-                            ui.monospace(format!(
-                                "{} × {}",
-                                units.format_length(report.flat_size.x),
-                                units.format_length(report.flat_size.y)
-                            ));
+                            match report.flat_size {
+                                Some(size) => {
+                                    ui.monospace(format!(
+                                        "{} × {}",
+                                        units.format_length(size.x),
+                                        units.format_length(size.y)
+                                    ));
+                                }
+                                None => {
+                                    ui.label("No flat pattern").on_hover_text(
+                                        report.no_flat_pattern.as_deref().unwrap_or_default(),
+                                    );
+                                }
+                            }
                             ui.end_row();
                             ui.label("Thickness");
                             ui.monospace(units.format_length(report.thickness));

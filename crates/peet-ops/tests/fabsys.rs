@@ -981,8 +981,30 @@ fn a_bend_too_shallow_for_its_deduction_folds_but_has_no_flat_pattern() {
         lip["message"].as_str().unwrap().contains("no flat pattern"),
         "{lip}"
     );
+    // No flat size is reported for a part that has no flat pattern: why, instead.
     let bodies = ok(&mut doc, json!({"op": "bodies"}));
-    assert!(bodies["bodies"][0]["volume_mm3"].as_f64().unwrap() > 100.0 * 60.0 * 2.0);
+    let body = &bodies["bodies"][0];
+    assert!(body["volume_mm3"].as_f64().unwrap() > 100.0 * 60.0 * 2.0);
+    assert!(body.get("flat_size").is_none(), "{body}");
+    assert!(
+        body["no_flat_pattern"]
+            .as_str()
+            .unwrap()
+            .contains("must be greater than zero to unfold"),
+        "{body}"
+    );
+    let table = ok(&mut doc, json!({"op": "bend_table"}));
+    assert!(table.get("flat_size").is_none(), "{table}");
+    assert!(table.get("flat_area_mm2").is_none(), "{table}");
+    assert!(table["no_flat_pattern"].is_string(), "{table}");
+    // The bend's row gives the deduction it was given, and the allowance that works out
+    // from it, not the stand-in it is folded with.
+    let bend = &table["bends"][0];
+    assert!(
+        (bend["deduction"].as_f64().unwrap() - 3.325).abs() < 1e-6,
+        "{bend}"
+    );
+    assert!(bend["allowance"].as_f64().unwrap() < 0.0, "{bend}");
     let dxf = dir.join("flat.dxf").to_string_lossy().into_owned();
     let e = error(&mut doc, json!({"op": "export", "path": dxf}));
     assert!(e.contains("no flat pattern"), "{e}");

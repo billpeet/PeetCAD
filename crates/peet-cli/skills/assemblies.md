@@ -1291,8 +1291,8 @@ Run these when the assembly is put together, before calling it done.
   `unchecked` is a pair that could not be compared: treat it as not known, not as
   clear. `"component": NAME` checks just that component against the others.
 - **`bom`** lists each part once with its `quantity`, `material`, `mass_kg` (of one)
-  and `total_mass_kg`, and for a sheet metal part its `thickness`, `flat_size` and
-  `bends`: what to order and cut. By default the parts inside sub-assemblies are counted
+  and `total_mass_kg`, and for a sheet metal part its `thickness`, `flat_size` (or
+  `no_flat_pattern`: see the `sheet-metal` skill) and `bends`: what to order and cut. By default the parts inside sub-assemblies are counted
   with the rest; `"level": "top"` lists a sub-assembly as one line.
   `{"op": "export", "path": "bom.csv"}` writes it as a table.
 - **`mass`** gives each component's mass and centre of gravity, and the whole's under

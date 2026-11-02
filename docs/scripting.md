@@ -672,9 +672,9 @@ is derived from it. `configurations` gives each derived one's `parent`.
 | `parameters` | named values and units; a parameter that differs between configurations lists its expression in each |
 | `dimensions` (`feature`, `name`) | every dimension's address `NAME@FEATURE` and value: see [Dimensions by name](#dimensions-by-name) |
 | `configurations` | the configurations (a derived one with its `parent`), the active one, and what differs: the configurations each feature is suppressed in, each parameter's expression in every configuration, under `values` each feature value and sketch dimension in every configuration, and under `settings` each direction (`reverse`, `both`, `flip_side`) and sketch plane (`on`) that differs. In an assembly also `components` (for each component that differs, in every configuration, the fields that differ: `suppressed`, `configuration`, `fixed`, `placement`) `mates` (for each mate that differs: `suppressed`, and its values) and `equations` (for each equation that differs, by what it sets, its expression in every configuration; null where there is none) |
-| `bodies` | bounds, volume, counts; flat size and thickness for sheet metal |
+| `bodies` | bounds, volume, counts; flat size and thickness for sheet metal (`no_flat_pattern`, with why, in place of `flat_size` for a part that can't be unfolded; the same in `bend_table` and `bom`) |
 | `faces`, `edges` (`body`) | what made each face, normals, centres, a round face's `radius`, `axis` and a point on it (`axis_point`); edge ends and the faces they join, a straight edge's `direction` (the one mates take) |
-| `bend_table` (`body`) | flat size, area, and each bend |
+| `bend_table` (`body`) | flat size, area, and each bend (a bend too shallow to unfold gives its bend model's allowance and deduction, not the stand-in it is folded with) |
 | `checks` (`body`) | manufacturing checks, and the limits they were run with |
 | `materials` (`material`) | the material and gauge tables |
 | `mass` (`body`) | volume, area, centre of gravity, principal moments (for a density of 1), and `mass_kg` if the part has a material; each body and the total. In an assembly: see [Assemblies](#assemblies) |

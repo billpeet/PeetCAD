@@ -663,18 +663,54 @@ Floor Mount Assembly uses `C:\Users\Dave\Desktop\Northern Views Estate SPS\Batte
 
 ## FabSys as the driver
 
-Not yet examined in detail: `ISolidWorksManager` has about 40 methods, and each needs a
-`peet` operation or a decision that it is not needed. Known so far:
+**Where it stands** (2 November 2026; PeetCAD branch `fabsys`, FabSys branch `peetcad-backend`): FabSys runs the
+production script, `enclosure_script MASTER.boo`, unchanged, against PeetCAD. `FabSys.PeetCAD`'s `PeetCadManager`
+implements `ISolidWorksManager` over `peet serve` (one JSON operation per line in, one reply per line out, documents
+kept open), and `FabSys.Run` runs a `.fab` job headless. All six corpus jobs (`21387-2`, `21441-1`, `21455-2`,
+`Test 1`, `test`, `test2`) run end to end: nothing is refused, no mate fails and nothing fails to build. Compared with
+what SolidWorks made for the same jobs (`tools/sw-import/compare-job.js`), every difference that is left has a cause
+outside PeetCAD:
 
-| | Gap | Mark |
+| Job | Differences | Cause |
 |---|---|---|
-| F1 | `ApplySmartFeatures` (see P6): `apply_smart_features` | Done in `peet`; FabSys integration still to do |
-| F2 | `SetSketchText` (see P5) | Gap |
-| F3 | `MarkSubAssemblyFlexible` (see A9) | Decide |
-| F4 | `AddMate` with planes and sub-assembly parts (see A1, A2) | Done in `peet`; FabSys integration still to do |
-| F5 | `CreateSketch`, `CreateLine`, `CreateDimension`, `AddConstraint`, `InsertPlane` in an assembly: sketching against a component's named face from the assembly | Check |
-| F6 | `RunMacro` | Decide |
-| F7 | The rest of the interface, method by method | Check |
+| 21441-1 | 47 (212 of 237 components match) | 42 the templates changed after SolidWorks ran the job (the Door's R-hinge mates failed in SolidWorks' older template); 4 solver noise under 0.002 mm; 1 SolidWorks left an equation unapplied (below) |
+| 21387-2 | 185 | 177 edited by hand in SolidWorks after the run; 8 the templates changed |
+| 21455-2 | 17 | all edited by hand after the run (the doors) |
+
+21441-1's Wall Inner Horizontal 2 is 0.017% larger than SolidWorks' (182 mm³): its BackwallCutout slot is 19 mm wide
+where SolidWorks' is 21. The template's equation `"D1@Sketch69"=15+("Thickness"*2)` sets the slot's width, and the
+job makes the part 2 mm thick, not 3. SolidWorks' export of the job's part has the equation live and evaluating to
+19, and the sketch fully defined with D1 as the only dimension across the slot. But the sketch is still at the 21 mm
+the template's 3 mm gave. Every other equation on `Thickness` in the three jobs' parts did take effect in SolidWorks
+(Floor, Roof, Mullion Vertical, Esc Surround Mid). The sketch is between Unfold1 and Fold1, and SolidWorks appears
+not to have solved it again after FabSys changed the thickness. PeetCAD applies the equation. To confirm, open the
+job's part in SolidWorks (read only) and force a rebuild: it should go to 19 mm.
+
+21441-1 takes about 850 s with one thread; SolidWorks' save times suggest it took 15–20 minutes. Most of the time is
+spent in `ApplySmartFeatures` and `AddMate`.
+
+The interface, method by method:
+
+| | Method | In PeetCAD | Mark |
+|---|---|---|---|
+| F1 | `ApplySmartFeatures` (see P6) | `apply_smart_features`, faces by name or ray | Done |
+| F2 | `SetSketchText` (see P5) | Refused; the production script doesn't call it | Not needed |
+| F3 | `MarkSubAssemblyFlexible` (see A9) | `flexible` | Done |
+| F4 | `AddMate` with planes and sub-assembly parts (see A1, A2), distance, flip and alignment as AddMate5 takes them | `mate` | Done |
+| F5 | `CreateSketch`, `InsertSketch`, `CreateLine`, `CreateDimension`, `AddConstraint` | Refused; the production script doesn't call them | Not needed |
+| F6 | `RunMacro` | Refused: a SolidWorks macro can't run in PeetCAD | Not needed |
+| F7 | `InsertPlane` | `plane` from an assembly plane, renamed | Done |
+| F8 | `CopyAndOpenComponent`, `InsertComponent`, `SaveAndInsertSubAssembly`, `CreateSubAssembly`, `CreateAssembly` | `open`, `insert`, `replace` with `link` (ReplaceComponents2), `save`; the job's copies named as SolidWorks names them | Done |
+| F9 | `SetDimensionValue`, `SetGlobalVariable`, `SuppressFeature`, `UnsuppressFeature`, `SuppressComponent`, `UnsuppressComponent`, `FixComponent`, `UnfixComponent`, `SetBendDeduction` | `set` (a dimension by its address, a global variable by name; FabSys refuses a global variable the part doesn't have, as SolidWorks does), `suppress`, `fix`, `sheet_metal` | Done |
+| F10 | `SetBendRadius` | Not applied, as in SolidWorks (FabSys never calls `ModifyDefinition`) | Done |
+| F11 | `MakeCompVirtual` | Refused: PeetCAD has no virtual components; the production script doesn't call it | Not needed |
+| F12 | `ZoomToFit`, `EnableGraphicsUpdate`, `DocumentVisible`, `SelectObject` | Nothing to do headless | Done |
+
+Not done on the FabSys side: the WPF app (`MainPaletteViewModel`) still always uses `SolidWorksManager`;
+`EnclosureBuilder` casts to `SolidWorksManager` to set two preferences; and the script's one `ShowMessage` opens a
+WinForms MessageBox, which blocks a headless run. Script bugs are reported, not worked around: PeetCAD refuses a
+`SetConfiguration` to a configuration the template doesn't have, where SolidWorks' `ShowConfiguration2` fails and
+FabSys ignores the failure.
 
 **The template library** (30 October 2026): every template as a `.peet` file of its name in one folder, assemblies
 linking their parts and sub-assemblies by relative paths with SolidWorks' instance names, every part and assembly
