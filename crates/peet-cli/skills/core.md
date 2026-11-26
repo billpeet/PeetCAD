@@ -61,7 +61,9 @@ Done when `status` shows `"failures": []` and `bodies` has the sizes that were a
   (`set_parameter`) for sizes that may change: features follow them.
 - **Names.** Features are named as they are added (`Sketch1`, `Extrude1`, `Cut-Extrude1`,
   `Edge-Flange1`); the reply's `created` gives the name. Pass `name` to choose one, and
-  refer to a feature by name.
+  refer to a feature by name. As in SolidWorks, a feature's (or a reference plane's,
+  a mate's, a component's) name is found in any case where only one is alike
+  (`"wiv mid plane"` finds `WIV Mid Plane`).
 - **`field=value` on the command line** is JSON if it reads as JSON (`depth=8`,
   `flip=true`) and text otherwise (`depth=2mm`). Operations with nested JSON (`draw`
   lists, selectors) go in a script file or standard input (`peet run - -f PART.peet`),
@@ -70,6 +72,9 @@ Done when `status` shows `"failures": []` and `bodies` has the sizes that were a
   not save. Use it when a broken part must not be written.
 - **Exit code:** 0 applied, 1 an operation was not applied, 2 the command line or a file
   was wrong.
+- **`rebuild`** rebuilds the document from the start, reusing nothing (SolidWorks' force
+  rebuild), and replies its `status`. Every operation already rebuilds what it changed:
+  use it only to check that a result doesn't depend on what was remembered.
 
 ## Conditional sizes
 
@@ -122,7 +127,9 @@ SolidWorks.
 - `set` sets a dimension by address, or a parameter by name, to a number or an
   expression. It takes `configurations` as `edit` does. A reference (driven) dimension
   can't be set. As in SolidWorks, an address's case doesn't matter when only one
-  dimension matches it (`Width@Sketch1` finds `width@Sketch1`).
+  dimension matches it (`Width@Sketch1` finds `width@Sketch1`). A negative number
+  reverses a distance in a sketch, as SolidWorks does: the geometry goes to the other
+  side (see the sketching skill).
 - A parameter's name is a word, or any text without `"` or `@`, as SolidWorks names its
   global variables (`Base Height`, `50.00mm-`). Quote a name that isn't a word in an
   expression: `"Base Height" / 2`. `set` takes it unquoted.
@@ -160,6 +167,22 @@ script. Otherwise one `peet` call per part is simpler.
   `{"op": "save", "path": ..., "document": ...}`, or its changes are lost (the run says
   so on standard error).
 - `close` refuses a document with unsaved changes: save it, or add `"discard": true`.
+
+## Driving peet from a program: `peet serve`
+
+When a program sends many operations one at a time and reads each reply before choosing
+the next (a backend standing in for SolidWorks), start `peet serve` once instead of a
+`peet` call per operation:
+
+- Write one operation per line to its standard input; read exactly one reply line for
+  each from its standard output before writing the next.
+- Documents stay open between lines: open or make each with `open` or `new` (`"keep":
+  true` keeps the others open), move between them with `switch` or `"document"`, and
+  `save` each yourself. Nothing is saved for you.
+- A reply with `"ok": false` is a failed operation, not a dead server: carry on.
+  `"internal": true` marks a failure inside PeetCAD; check the document with `status`.
+- End with `{"op": "exit"}`: its reply lists under `unsaved` any document left with
+  unsaved changes. Closing the input ends it too.
 
 ## More, when the task reaches it
 

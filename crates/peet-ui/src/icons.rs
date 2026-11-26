@@ -278,7 +278,7 @@ impl Icon {
             FeatureKind::CoordSystem(_) => Self::CoordSystem,
             FeatureKind::BaseFlange(_) => Self::BaseFlange,
             FeatureKind::EdgeFlange(_) => Self::EdgeFlange,
-            FeatureKind::SheetCut(_) => Self::SheetCut,
+            FeatureKind::SheetCut(_) | FeatureKind::Smart(_) => Self::SheetCut,
             FeatureKind::Hem(_) => Self::Hem,
             FeatureKind::SketchedBend(_) => Self::SketchedBend,
             FeatureKind::Jog(_) => Self::Jog,

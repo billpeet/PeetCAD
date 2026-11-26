@@ -8,7 +8,7 @@ It opens each file read-only in its own SolidWorks instance and never saves it. 
 to run if the instance it gets is under user control or has documents open.
 
 ```
-peet-sw-export.exe <input-list.txt> <output-directory> [--step] [--dxf] [--no-selections]
+peet-sw-export.exe <input-list.txt> <output-directory> [--step] [--dxf] [--no-selections] [--unsuppress-always-off]
 ```
 
 - `input-list.txt`: one path per line (`.sldprt` or `.sldasm`).
@@ -17,6 +17,20 @@ peet-sw-export.exe <input-list.txt> <output-directory> [--step] [--dxf] [--no-se
 - `--no-selections`: don't read the edges, faces and sketches that feature definitions
   refer to. Reading them rolls the model back to each feature in turn, which is the slow
   part and the one most likely to upset SolidWorks. Use it if an export hangs or fails.
+- `--unsuppress-always-off` (parts; off by default): read what a feature suppressed in
+  every configuration refers to. SolidWorks gives such a feature's selections as null (an
+  edge flange's `Edges: [null]`: Door's `L`/`RInterlockingFlange1`/`2` and
+  `L`/`RLockingDoorFlange`), so the importer can't rebuild it. With the flag, in each
+  configuration that is not a flat pattern, each such feature (not sketches, planes or
+  folders) is unsuppressed in that configuration only (`SetSuppression2`, with the
+  suppressed features it is built on, parents first), the part rebuilt, its definition read
+  again and the faces it and its sub-features make read, then everything unsuppressed is
+  suppressed again, last first, and the part rebuilt. The document stays read-only and is
+  never saved. The feature keeps `suppressed: true`; its `definition` is the one read
+  unsuppressed, and `readUnsuppressed` says so: `configuration`, `unsuppressed` (names),
+  `faces` (as a body's), `errorCode` if it rebuilt with an error, `error` if the read
+  failed (then the definition is the suppressed one). Each feature is guarded on its own;
+  `export.log` lists what was read. Ignored with `--no-selections`.
 - Output: the JSON files, `export.log` and `summary.json`. A document that could not be
   fully exported still gets a file, with `completed` false and the reason.
 - Exit code: 0 when every document was fully exported, 1 when one was not, 2 for wrong
@@ -54,7 +68,7 @@ For each configuration:
     `Groups`).
   - `planeTransform` for a reference plane and `mate` (type, alignment, the entities
     mated) for a mate.
-- `equations`, with their values.
+- `equations`, with their values (which of them SolidWorks applies: see format 9).
 - `bodies` (parts): volume, area, centre of gravity, bounding box, and every face with its
   surface, the feature that made it and its name if it has one. Named edges too.
 - `components` (assemblies): each instance's file, configuration and transform, and for a
@@ -143,6 +157,28 @@ checked against the 2018 interop assemblies, and not yet run):
   (`ReferencedDisplayState2`).
 - Parts: a body's, a face's and a feature's own `appearance` where it has one (`HasMaterialPropertyValues`).
 
+Added in format 9 (equations in force, and linear patterns up to a reference; run on SolidWorks 2018 SP5,
+revision 26.5):
+
+- Per configuration, each equation has `suppressed` (`IEquationMgr.Suppression`: suppressed in this configuration)
+  and `configurationOption` (`GetConfigurationOption`, swInConfigurationOpts_e: 1 this configuration, 2 all, 3 the
+  ones named), and the configuration has `disabledEquationCount` (`GetDisabledEquationCount`), `equationStatus`
+  (`Status`) and `automaticSolveOrder`. `disabled` (`IEquationMgr.Disabled`) is still written, but don't go by
+  it: SolidWorks 2018 gives true for every equation but the first, in every document, where
+  `GetDisabledEquationCount` is 0 and SolidWorks applies them all (the jobs' parts have the values they give).
+  A disabled equation is not in the list at all (`GetCount`, `Equation[i]`): the count is of those, and is 4
+  where one equation is listed (Escutcheon Surround Removable). So every equation listed is in force unless it is
+  suppressed in the configuration (`tools/sw-import/equation-state.js`). An equation of one configuration only (`configurationOption` 1) has its
+  own text in that configuration's list (Door Stiffener D's `"D4@Sketch12"`).
+- A part's linear pattern has `editSelections`: what editing it (Edit Feature) selects, each with its `type`
+  (swSelectType_e), `mark` and `entity`; the edit is cancelled. SolidWorks 2018 has the pattern's "up to
+  reference" but no API for it (`D1EndCondition` and the rest are from 2019, and are listed in `unreadable`): the
+  reference is the selection marked 0x200000 (2097152). Where it is also the second direction's edge it is listed
+  once, with mark 2. Its offset is the pattern's dimension D5; which of the spacing (D3) and the count (D1) is
+  kept is the one SolidWorks has driving (the other is driven, `drivenState` 1, with no equation on it). Which way
+  the offset goes is not given. Read for every pattern not suppressed in the configuration, unless
+  `--no-selections`.
+
 Every read is guarded: what fails is logged and left out.
 
 A configuration SolidWorks made for the flat pattern (`…SM-FLAT-PATTERN`) has its bodies
@@ -177,13 +213,29 @@ ssh USER@HOST powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Fil
 scp USER@HOST:C:/Users/USER/AppData/Local/PeetSwExport/output/* <local folder>
 ```
 
+Door's interlocking flanges (suppressed in every configuration) are read with
+`-UnsuppressAlwaysOff`, on Door alone, into a folder of its own (it writes a new
+`Door.SLDPRT.swx.json`, which then replaces the one in `exports\v7-run`; `--step`/`--dxf`
+as for that export):
+
+```powershell
+Set-Content C:\Users\USER\AppData\Local\PeetSwExport\door.txt '\\nas\Design\Solidworks\Templates\Door.SLDPRT'
+ssh USER@HOST powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `
+  C:\Users\USER\AppData\Local\PeetSwExport\bin\RunInDesktopSession.ps1 `
+  -InputList C:\Users\USER\AppData\Local\PeetSwExport\door.txt `
+  -OutputDirectory C:\Users\USER\AppData\Local\PeetSwExport\door -Step -Dxf -UnsuppressAlwaysOff
+```
+
+`export.log` then has a line `<flange> in <configuration>: read unsuppressed (...)` for each
+flange and configuration, and each flange's `Edges` in the file are no longer null.
+
 ## Status
 
 Run against SolidWorks 2026 on the whole template library (201 parts, 29 assemblies):
 all complete, in about 80 minutes, twice. The flat sizes in the DXF files agree with the
 flat-pattern configurations' bodies and with the bend deduction by hand.
 
-`formatVersion` is 8 (6 to 8 are described above). What each earlier version added:
+`formatVersion` is 9 (6 to 9 are described above). What each earlier version added:
 
 - **2:** a definition has its `Is…` methods (`IsBossFeature` is the only thing that tells a
   boss-extrude from a cut-extrude; a part's first extrude is `IsBaseExtrude`) and its

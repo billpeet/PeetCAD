@@ -76,6 +76,35 @@ pub struct ReferenceDimension {
 /// The second part of a reference dimension's address, as in SolidWorks: `RD1@Annotations`.
 pub const ANNOTATIONS: &str = "Annotations";
 
+/// `expression` with each address that reaches into the assembly's component `old`
+/// (`Height@Sketch1@Door-1`, or SolidWorks' `Height@Sketch1@Door<1>.Part`: the component
+/// is the address's last part) reaching into `new` instead, as SolidWorks keeps an
+/// assembly's equations when a component is renamed by replacing its file. `None` if it
+/// reads nothing of `old` (or doesn't parse).
+pub fn rename_component(expression: &str, old: &str, new: &str) -> Option<String> {
+    let names = expr::Expr::parse(expression).ok()?.names();
+    let mut out = expression.to_owned();
+    let mut changed = false;
+    for name in names {
+        let Some((head, last)) = name.rsplit_once('@') else {
+            continue;
+        };
+        if !expr::solidworks_component(last).eq_ignore_ascii_case(old) {
+            continue;
+        }
+        let renamed = format!("\"{head}@{new}\"");
+        let quoted = format!("\"{name}\"");
+        if out.contains(&quoted) {
+            out = out.replace(&quoted, &renamed);
+            changed = true;
+        } else if out.contains(&name) {
+            out = out.replace(&name, &renamed);
+            changed = true;
+        }
+    }
+    changed.then_some(out)
+}
+
 /// The most rounds of setting parts from equations that read each other.
 const ROUNDS: usize = 4;
 

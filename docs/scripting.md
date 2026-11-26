@@ -39,6 +39,7 @@ feature.
 peet run [SCRIPT...] [options]     # the operations of scripts (- or none: standard input)
 peet op JSON... [options]          # operations given as JSON
 peet OPERATION [field=value...]    # one operation, by name
+peet serve [--materials CSV] [-q]  # keep documents open, one operation per line in, one reply out
 peet ops [OPERATION]               # the operations, or one with its fields
 peet skills [NAME]                 # how to use peet, for an agent
 peet sessions                      # the running PeetCADs and the part each has open
@@ -96,6 +97,42 @@ so they describe the version being run. Every script in them is run by a test, a
 | 0 | every operation was applied |
 | 1 | an operation was not applied, or `--strict` found features that can't be built. Nothing was saved |
 | 2 | the command line or a file was the problem. Nothing was applied |
+
+### Serving a program: `peet serve`
+
+`peet serve` is for a program that drives PeetCAD operation by operation, as FabSys
+drives SolidWorks: it starts once and keeps its documents open between operations, so
+each costs only its own work.
+
+```text
+> {"op": "open", "path": "J1234 Door Assembly.peet"}
+< {"ok": true, "op": "open", "kind": "assembly", ...}
+> {"op": "set", "name": "Height@Sketch1@J1234 AL3 Door-1", "value": 1800}
+< {"ok": true, "op": "set", ...}
+> {"op": "exit"}
+< {"ok": true, "op": "exit", "unsaved": ["J1234 Door Assembly.peet"]}
+```
+
+- **The protocol.** It reads one operation per line of standard input (the operations of
+  `peet run`, a JSON object each) and writes exactly one reply line for it on standard
+  output, flushed, before it reads the next. Blank lines and lines starting with `#` or
+  `//` are not operations and get no reply. `{"op": "exit"}` (replied to, with
+  `unsaved`: the documents with changes not saved) or the end of the input ends it,
+  with exit code 0.
+- **Documents** stay open until closed: `new` and `open` (with `"keep": true` beside the
+  others), `switch`, `save`, `close` and `documents` work across lines, and `"document"`
+  sends an operation to another one ([several documents](#several-documents)). It starts
+  with one new, empty part, which `open` or `new` replaces. `undo` reaches back across
+  lines.
+- **Nothing is saved** unless an operation saves it (`save`); `exit` leaves the rest.
+- **Failures are replies**, and it goes on: an operation that can't be applied, a line
+  that is not JSON or not one operation (a list goes one per line) reply
+  `"ok": false` with `error`. A failure inside PeetCAD itself (a bug) is caught and
+  replied the same way, with `"internal": true`; the document it was sent to may be
+  partly changed (`status`, `undo`).
+- **Paths** are relative to where `peet serve` was started. The application's own
+  operations (`zoom_to_fit`, `view`) are refused: there is no window. Standard error
+  carries only notes (`-q` silences them).
 
 ### A part that is open in PeetCAD
 
@@ -187,7 +224,7 @@ rebuild measured).
 
 | Operation | Fields |
 |---|---|
-| `set` | `name` (an address, or a parameter), `value`, `configurations` (as for `edit`; a parameter: as for `set_parameter`). A reference dimension can't be set. An address's case doesn't matter where only one dimension matches it, as in SolidWorks. On an assembly: a mate's value `D1@MATE` (with `configurations`, of the assembly), a parameter, or a component's dimension `NAME@FEATURE@COMPONENT` (see Assemblies; `configurations` of the assembly, for its equation) |
+| `set` | `name` (an address, or a parameter), `value`, `configurations` (as for `edit`; a parameter: as for `set_parameter`). A reference dimension can't be set. An address's case doesn't matter where only one dimension matches it, as in SolidWorks. A negative number reverses a sketch's distance from a line, horizontal or vertical distance, as in SolidWorks: the geometry goes to the other side and the dimension keeps the value without its sign. On an assembly: a mate's value `D1@MATE` (with `configurations`, of the assembly), a parameter, or a component's dimension `NAME@FEATURE@COMPONENT` (see Assemblies; `configurations` of the assembly, for its equation) |
 | `name_dimension` | `feature`, `dimension` (its name or field), `name`. A sketch dimension's name has no `"` or `@`; another feature's value may take a whole address |
 | `dimensions` | `feature`, `name`: every address, its feature, field, value, `driven` for a reference dimension, and each configuration's value where they differ |
 
@@ -199,6 +236,10 @@ rebuild measured).
 
 ## Selectors
 
+A feature, reference plane, mate or component given by name is found by exactly that name,
+or, as in SolidWorks, in any case where only one is alike (`"wiv Mid Plane"` finds
+`WIV Mid Plane`).
+
 In the UI, select a face or edge in a part's viewport and use **Properties > Names** to
 add a name or remove an existing binding. With nothing selected, Properties lists
 all names, including unavailable targets, so you can remove stale bindings. The same
@@ -206,7 +247,8 @@ actions are operations.
 
 Use `name_face` with `face` and `name`, or `name_edge` with `edge` and `name`, to
 bind a user name to geometry already built. `delete_name` with `name` removes the
-binding. Names are case-sensitive, unique across faces and edges in each part, saved
+binding. Names are unique across faces and edges in each part (found in any case where
+only one is alike, as in SolidWorks), saved
 with the model and shared by all configurations. Select them with `{"name": "Front"}`;
 other selector fields can still restrict the match. `faces` and `edges` include a
 `names` array for each item. Curved faces, including hole walls, can be named and
@@ -221,10 +263,10 @@ the candidates. All the fields given must match.
 
 | Wanted | Selector |
 |---|---|
-| plane | `"top"`, `"front"`, `"right"`, a reference plane's name, or a face selector (a flat face) |
+| plane | `"top"`, `"front"`, `"right"`, a reference plane's name, or a face selector (a flat face). `"Front Plane"`, `"Top Plane"`, `"Right Plane"` are the reference plane of that name where there is one (`solidworks_planes`), else the standard plane |
 | axis | `"x"`, `"y"`, `"z"`, a reference axis's name, or an edge selector |
 | point | `"origin"`, a reference point's name, or a vertex selector |
-| face | `{"name": "Front"}` a user name · `{"at": [x,y,z]}` a point on it · `{"normal": [x,y,z]}` its outward normal · `{"feature": "Extrude1", "side": "end"}` what made it · `{"body": 0, "index": 5}` from `faces` |
+| face | `{"name": "Front"}` a user name · `{"at": [x,y,z]}` a point on it · `{"normal": [x,y,z]}` its outward normal · `{"feature": "Extrude1", "side": "end"}` what made it · `{"body": 0, "index": 5}` from `faces` · `{"ray": {"from": [x,y,z], "direction": [x,y,z]}}` the face seen looking along `direction` through `from`: the first on the whole line, faces before `from` included (SolidWorks' SelectByRay, as FabSys picks faces) |
 | edge | `{"name": "HingeEdge"}` a user name · `{"between": [[x,y,z],[x,y,z]]}` its ends · `{"at": [x,y,z]}` a point on it · `{"faces": [face, face]}` where two faces meet · `{"body": 0, "index": 7}` from `edges` |
 | vertex | `{"at": [x,y,z]}` · `{"body": 0, "index": 2}` |
 
@@ -244,7 +286,7 @@ flat piece at that point, as SolidWorks keeps each piece picked.
 |---|---|
 | `sketch` | `on` (plane), `name`, `draw` |
 | `draw` | `sketch`, `draw` |
-| `set_dimension` | `sketch`, `name` (`"d1"`), `value`, `configurations` |
+| `set_dimension` | `sketch`, `name` (`"d1"`), `value`, `configurations`. A negative number reverses a distance from a line, a horizontal or a vertical distance (the geometry goes to the other side), as SolidWorks does |
 | `set_text` | `sketch`, `text` (its id; left out: the sketch's only text), `string`, `font`, `height`, `angle`, `width`, `spacing`, `align` |
 
 A `draw` list holds items with a `type`:
@@ -265,7 +307,7 @@ A `draw` list holds items with a `type`:
 | `text` | `at`, `string`, `height`, `font`, `angle`, `width`, `spacing`, `align` (part `point`) |
 | `coincident`, `horizontal`, `vertical`, `parallel`, `perpendicular`, `tangent`, `equal`, `concentric`, `collinear`, `coradial`, `midpoint` (of a line or an arc), `symmetric`, `fix` | `of` (entities) |
 | `patterned` | `of`: a seed, a copy of it in a linear sketch pattern, and the pattern's first copy where that is another (points, lines or circles) |
-| `distance`, `doubled_distance`, `length`, `horizontal_distance`, `vertical_distance`, `radius`, `diameter`, `angle`, `offset_distance` | `of`, `value`, `name`, `driven` (`offset_distance`: a curve, then the curve it is offset from); `sides` on `distance`, `horizontal_distance`, `vertical_distance` |
+| `distance`, `doubled_distance`, `length`, `horizontal_distance`, `vertical_distance`, `radius`, `diameter`, `angle`, `supplementary_angle`, `offset_distance` | `of`, `value`, `name`, `driven` (`offset_distance`: a curve, then the curve it is offset from); `sides` on `distance`, `horizontal_distance`, `vertical_distance` |
 | `fillet` | `corner`, `radius` |
 | `trim`, `extend` | `curve`, `near` |
 | `offset` | `of`, `distance` |
@@ -309,6 +351,9 @@ plus equal-radius relations. Each returns both relation ids. `doubled_distance` 
 the perpendicular distance from a point to a line, with its own editable dimension name.
 `offset_distance` keeps a curve offset from another, as SolidWorks' Offset Entities does: two lines
 parallel and the value apart, two circles or arcs concentric with radii the value apart.
+`angle` is the angle between two lines' directions (start to end); `supplementary_angle` is
+180° less, the angle with the second line turned round, as SolidWorks measures an angle
+whose dimension is drawn on that side.
 `sides` (`["center" | "near" | "far", ...]`, one per end) measures `distance`,
 `horizontal_distance` or `vertical_distance` to a circle's or arc's near or far side, as
 SolidWorks' arc conditions (Min, Max) do; ends are then points, circles or arcs, or a line
@@ -354,10 +399,21 @@ with their defaults' types):
 `extrude`, `cut`, `revolve`, `cut_revolve`, `sweep`, `cut_sweep`, `loft`, `cut_loft`,
 `hole`, `fillet`, `chamfer`, `shell`, `draft`, `convert_to_sheet`, `plane`, `axis`, `point`, `coordinate_system`, `base_flange`,
 `edge_flange`, `sheet_cut`, `hem`, `sketched_bend`, `jog`, `miter_flange`, `corner`, `break_corner`,
-`unfold`, `fold`, `dimple`, `emboss`, `louver`, `linear_pattern`, `circular_pattern`, `mirror`.
+`unfold`, `fold`, `dimple`, `emboss`, `louver`, `linear_pattern`, `circular_pattern`, `mirror`,
+`smart_feature`.
 
 - `plane`: `from` + `distance` (offset), `from` + `about` + `angle` (angled), or `a` + `b`
   (halfway between).
+- `smart_feature`: `sketch`, `reference` (default 0), `end` (`sheet`, `blind`,
+  `through_all`), `depth`, `reverse`. Makes the part a smart component (SolidWorks'): the
+  sketch, drawn where the face of the part it is placed against will be, is a cut that
+  `apply_smart_features` makes in that part in an assembly: on the face given in place
+  `reference` among its references, as SolidWorks takes them. It changes nothing in this part.
+  A `linear_pattern` of smart features (only) changes nothing here either:
+  `apply_smart_features` patterns the cut it makes, with the count and spacing the pattern
+  has in the smart part then (an expression of its sizes, as SolidWorks works out a library
+  feature's equations when it is applied), along the axis of the other part its direction
+  comes to there.
 - `extrude` and `cut` take `draft`: degrees the walls lean from the direction of
   extrusion, from the sketch plane, so that what is added or removed narrows away from the
   sketch (`draft_outward`: widens). Not with `mid_plane`. A `cut` with `flip_side`
@@ -433,7 +489,10 @@ with their defaults' types):
   or two arcs: the round touches both). The body stays sheet metal. An inside corner,
   of the outline or of a cutout, gains the sheet an outside one loses. `faces` (flat faces)
   breaks every corner of each, found again at each rebuild, as SolidWorks' break corner on
-  a face does.
+  a face does; a chamfer there takes only the outside corners, as SolidWorks' does.
+- A bend whose bend model gives an allowance of zero or less (a deduction too big for a
+  shallow bend) is folded all the same, as SolidWorks folds it, with a warning on its
+  feature; the part has no flat pattern then (a DXF export of it is refused).
 - `corner` sets how flanges that run to one corner meet: `kind` (`butt`, `overlap`,
   `open`, `plain`), `gap` (for `open`, measured from each flange's inner face), and
   `relief`, what is cut from the blank where their bends meet
@@ -451,10 +510,12 @@ with their defaults' types):
   null` makes it a row again.
 - `linear_pattern`'s `up_to` (`{"plane": ...}` or `{"point": ...}`) runs its first
   direction up to a reference, as SolidWorks' "Up to reference": the copies span the
-  distance from the seed's centre (the middle of the box round its faces, or `up_to_seed`)
-  to the reference, less `up_to_offset` (more with `up_to_reverse`). `up_to_keeps`
+  distance from the seed's centre (the middle of the box round its faces, or of its
+  sketch's points if it left no faces of its own; or `up_to_seed`) to the reference, less `up_to_offset` (more with `up_to_reverse`). `up_to_keeps`
   `"spacing"` (default) gives as many copies as fit, one exactly at the end included;
-  `"count"` spreads `count` copies evenly. `"up_to": null` sets both again.
+  `"count"` spreads `count` copies evenly. The value that follows (the count, or the
+  spacing) is written into the pattern at each rebuild, so `dimensions` and expressions
+  read the worked-out value, as SolidWorks shows it. `"up_to": null` sets both again.
 - `count` for linear and circular part patterns, and a grid's `count2`, accept a number
   or an expression such as `"iif(width > 299mm, 3, 2)"` or `"int(width / 100mm)"`.
   Counts include the original and must evaluate to unitless whole numbers from 2 to
@@ -543,6 +604,8 @@ with their defaults' types):
 | `set_material` | `material` (a name, or `null` for none), `density` in kg/m³ (left out: the material tables' density for that material). What the part is made of: saved with it, and what `mass` weighs it with |
 | `set_color` | `color` (`"#rrggbb"` or `[r, g, b]`, or `null` for the usual colour): what the part is drawn in |
 | `undo`, `redo` | |
+| `rebuild` | rebuilds from the start, reusing nothing (SolidWorks' force rebuild); replies the status |
+| `solidworks_planes` | adds SolidWorks' standard planes as reference planes, `Front Plane` (PeetCAD's top), `Top Plane` (PeetCAD's front, facing +Y) and `Right Plane`, for a part or assembly in SolidWorks' coordinates; leaves ones it has |
 
 #A suppression expression overrides the saved manual flag while it is set. Clearing
 it restores the per-configuration manual flags. `suppress` changes those saved flags;
@@ -609,9 +672,9 @@ is derived from it. `configurations` gives each derived one's `parent`.
 | `parameters` | named values and units; a parameter that differs between configurations lists its expression in each |
 | `dimensions` (`feature`, `name`) | every dimension's address `NAME@FEATURE` and value: see [Dimensions by name](#dimensions-by-name) |
 | `configurations` | the configurations (a derived one with its `parent`), the active one, and what differs: the configurations each feature is suppressed in, each parameter's expression in every configuration, under `values` each feature value and sketch dimension in every configuration, and under `settings` each direction (`reverse`, `both`, `flip_side`) and sketch plane (`on`) that differs. In an assembly also `components` (for each component that differs, in every configuration, the fields that differ: `suppressed`, `configuration`, `fixed`, `placement`) `mates` (for each mate that differs: `suppressed`, and its values) and `equations` (for each equation that differs, by what it sets, its expression in every configuration; null where there is none) |
-| `bodies` | bounds, volume, counts; flat size and thickness for sheet metal |
+| `bodies` | bounds, volume, counts; flat size and thickness for sheet metal (`no_flat_pattern`, with why, in place of `flat_size` for a part that can't be unfolded; the same in `bend_table` and `bom`) |
 | `faces`, `edges` (`body`) | what made each face, normals, centres, a round face's `radius`, `axis` and a point on it (`axis_point`); edge ends and the faces they join, a straight edge's `direction` (the one mates take) |
-| `bend_table` (`body`) | flat size, area, and each bend |
+| `bend_table` (`body`) | flat size, area, and each bend (a bend too shallow to unfold gives its bend model's allowance and deduction, not the stand-in it is folded with) |
 | `checks` (`body`) | manufacturing checks, and the limits they were run with |
 | `materials` (`material`) | the material and gauge tables |
 | `mass` (`body`) | volume, area, centre of gravity, principal moments (for a density of 1), and `mass_kg` if the part has a material; each body and the total. In an assembly: see [Assemblies](#assemblies) |
@@ -666,6 +729,7 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 |---|---|
 | `new` with `"assembly": true` | starts an empty assembly |
 | `insert` | the part: `path` (a `.peet` file; an assembly becomes a sub-assembly), `sample`, `part` (an open document, by name or id) or `component` (another instance of its part). `name`, `at` (`[x, y, z]`: where the part's origin goes), `rotate` (`{"axis": "x"`, `"y"`, `"z"` or `[x, y, z]`, `"angle": degrees}`, from the part's own orientation), `fixed` (default: only the first component), `configuration` (the configuration of the part it shows; default the part's active one, or with `component` the configuration that component shows) |
+| `insert`: names | a component is named after its part with one past the highest number that part's components have had since the assembly was opened (`Bracket-1`; after `Bracket-2` is deleted the next is `Bracket-3`: numbers are not given again); a part from a file is called after the file (`J1 AL3 Door.peet`: `J1 AL3 Door-1`), as SolidWorks names components |
 | `insert` with `"link": true` | with `path`: the component follows the part's file instead of the assembly keeping a copy. The link is relative to the assembly's folder unless `"absolute": true` |
 | `update_links` | reads every linked part from its file again, and in a part every inserted part (`insert_part`). Replies `updated` (the parts or features that changed) and `warnings` (files that can't be found or read) |
 | `link` | `part` (a part's name or id, as `components` lists the parts), `path`, `absolute` (default false): links the part to the file if there is one (the part becomes what is in it), else writes the part there first |
@@ -674,8 +738,8 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 | `drag` | `component`, `to` (`[x, y, z]`, in the assembly), `point` (`[x, y, z]` on the component, in its own coordinates; default its origin): pulls the point towards the place as far as the component's mates allow. `short_by` in the reply is how far it still is |
 | `fix` | `component`, `on` (default true), `configurations` (of the assembly; default the active one) |
 | `component_configuration` | `component`, `configuration` (a configuration of its part, or `null` for whichever the part has active), `configurations` (of the assembly; default the active one): the configuration of its part the component shows, SolidWorks' referenced configuration (FabSys's `SetSubComponentConfig`). Two components of one part can show different configurations; each configuration is built once (model schema 12) |
-| `flexible` | `component` (a sub-assembly), `on` (default true): solves the sub-assembly as flexible (SolidWorks' "Solve as: Flexible"): its own mates are solved in this assembly with this one's, so what is not fixed in it moves as they let it, each instance posed on its own. `components` then gives `"flexible": true` and `moving` (each moving component's `path`, `at`, `rotate`, `freedom`). Off: rigid, as its file has it (model schema 12) |
-| `replace` | `component`, and `path`, `sample` or `part`: another part, in the same place |
+| `flexible` | `component` (a sub-assembly), `on` (default true): solves the sub-assembly as flexible (SolidWorks' "Solve as: Flexible"): its own mates are solved in this assembly with this one's, so what is not fixed in it moves as they let it, each instance posed on its own. A mate to a component in it that faces the wrong way (failed while the sub-assembly was rigid) swings that component round where its own mates leave it free to (a hinge leaf round its pin), rather than turning the sub-assembly over. `components` then gives `"flexible": true` and `moving` (each moving component's `path`, `at`, `rotate`, `freedom`). Off: rigid, as its file has it (model schema 12) |
+| `replace` | `component`, and `path`, `sample` or `part`: another part, in the same place. With `path` and `"link": true` (and `absolute`, as for `insert`) the component follows that file (SolidWorks' replace components). It keeps its mates (and a flexible sub-assembly replaced by a copy of its file, where what moves in it is) and the configuration of the same name; one named after its part (`Door-2`) is renamed after the new one keeping its number (`J1 Door-2`; the next free if that is taken), and the assembly's equations, parameters and component pattern counts and spacings that read it follow. A pattern's original carries its copies, which keep their numbers, as SolidWorks' copies are instances of the original's file; a copy itself can't be replaced |
 | `rename`, `suppress`, `show`, `delete` | `component` in place of `feature`. `suppress` takes `configurations` (of the assembly; default the active one) |
 | `component_pattern` | `components` (the originals), `type` (`linear`, `circular`), `name`. Linear: `direction`, `spacing`, `count` (the original included; a whole number or an expression, worked out at every rebuild: copies are made and removed as it changes), `flip`, `second` (`{direction, spacing, count, flip}`). Circular: `axis`, `angle` (default 360), `count`, `flip`. A direction or axis is `"x"`, `"y"`, `"z"`, `[x, y, z]`, `{"origin": …, "direction": …}`, or `{"component": …, "edge" or "face": selector}` |
 | `edit_component_pattern` | `pattern`, and any of `count`, `spacing`, `angle`, `flip`, `direction`, `axis`, `second` (`null` removes it) |
@@ -700,7 +764,8 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 | `explode_steps` | every step (`id`, `name`, `components`, `by`), whether the assembly is shown `exploded`, and under `moved` each component the steps move with its total `by` and where it is drawn exploded (`at`) |
 | `open_component` | `component`: opens its part as a document of its own, in the configuration the component shows (the reply's `configuration`), and makes it current. `save` without a `path` on that document stores it back, as one undo step of the assembly, for every component of the part, with the part's own active configuration as it was. Needs a session |
 | `components` | every component (`id`, `name`, `part`, `configuration` (of its part, where the part has several), `at`, `rotate`, `fixed`, `freedom`, `mates`, `status`, `message`, `min`, `max`) and every part (`id`, `name`, `kind`, how many `components`, `material`, and where it has several `configurations` and its `active_configuration`); how many `mates`, and the `freedom` left |
-| `mate` | `type` (`coincident`, `concentric`, `parallel`, `distance`, `angle`, `fasten`, `width`, `slot`, `limit_angle`, `limit_distance`, `symmetric`, `path`), `a`, `b`, `distance` or `angle` for those types, `flip` (`true`: aligned), `align` (`aligned`, `anti_aligned` or `closest`: which way round the ends go, SolidWorks' alignment; not with `flip`), `flip_dimension` (the distance or angle measured the other way: SolidWorks' "flip dimension"), `suppressed` (added without being solved: nothing moves until it is unsuppressed), `name`. An end is `{"component": …, "face": selector}` (or `"edge"`, `"vertex"`, `"plane"`, `"origin": true`, or `"sketch"` (name or id) with `"entity"` (the id `feature` gives a point, line, circle or arc)), the selector in the part's own coordinates. `component` is a name, id or nonempty path array from the top-level component down through sub-assemblies. `plane` takes `"top"`, `"front"`, `"right"`, a reference plane or coordinate system by name or id, or a planar face selector. With no `component`, the end is the assembly's own: `{"plane": "top"}` (or `front`, `right`) or `{"origin": true}`, fixed where the assembly is. For `fasten` the component alone |
+| `mate` | `type` (`coincident`, `concentric`, `parallel`, `distance`, `angle`, `fasten`, `width`, `slot`, `limit_angle`, `limit_distance`, `symmetric`, `path`), `a`, `b`, `distance` or `angle` for those types, `flip` (`true`: aligned), `align` (`aligned`, `anti_aligned` or `closest`: which way round the ends go, SolidWorks' alignment; not with `flip`), `flip_dimension` (the distance or angle measured the other way: SolidWorks' "flip dimension"; a `distance` from a straight edge square to a plane is measured from the edge's middle, as SolidWorks does), `suppressed` (added without being solved: nothing moves until it is unsuppressed), `name`. Ends the wrong way round are put right by turning over the component the mates above hold less (the newcomer), never one they place; a mate whose alignment the mates above rule out fails. An end is `{"component": …, "face": selector}` (or `"edge"`, `"vertex"`, `"plane"`, `"origin": true`, or `"sketch"` (name or id) with `"entity"` (the id `feature` gives a point, line, circle or arc)), the selector in the part's own coordinates. `component` is a name, id or nonempty path array from the top-level component down through sub-assemblies. `plane` takes `"top"`, `"front"`, `"right"`, a reference plane or coordinate system by name or id (one suppressed in its part is still mated to, where it would be, as SolidWorks does), or a planar face selector. With no `component`, the end is the assembly's own: `{"plane": "top"}` (or `front`, `right`, or a reference plane made in the assembly with `plane`) or `{"origin": true}`, fixed where the assembly is; or `{"face": {"ray": …}}`, the first face of any shown component the ray meets, in the assembly's coordinates. For `fasten` the component alone |
+| `plane` in an assembly | a reference plane of the assembly's own (SolidWorks' `InsertPlane` in an assembly), from its planes; `features`, `edit`, `rename` and `delete` work on it, and mate ends with no `component` take it |
 | `mate`, `type: "slot"` | `a`, `b`: a face of a straight slot (one of its round ends or a flat side) and an axis (a round face or edge), either way round. The axis stays parallel to the slot's ends and on the line between their axes. `mode`: `free` by default (anywhere between the ends), `centered`, `dimension` with `distance` (from the first end's axis: the round end picked, else the end the part lists first), `percent` with `percent`; `flip_dimension` measures from the other end. No `flip` or `align` |
 | `mate`, `type: "limit_angle"` / `"limit_distance"` | `a`, `b`, `min`, `max` (degrees, or lengths): the angle or distance, measured as `angle` and `distance` measure it (`flip_dimension` too), kept anywhere between them |
 | `mate`, `type: "symmetric"` | `a`, `b`: two planes, points or lines, mirror images in `plane` (an end: a flat face or a reference plane, or the assembly's own). The plane is on one of the two components, on a fixed one, or the assembly's; `a` and `b` may be on one component (both faces of a part, centred on the plane) |
@@ -711,13 +776,14 @@ instead. The design is in [ADR 0009](adr/0009-assemblies.md).
 | `set` | `name` `D1@MATE` (SolidWorks' name for a mate's value, `D1@Distance6`), `value`, `configurations` (as for `edit_mate`): a distance or angle mate's value; or an assembly parameter by name |
 | `set` with a component | `name`: an address that reaches into a component, `NAME@FEATURE@COMPONENT` (`Height@Sketch1@Door-1`; SolidWorks' `Height@Sketch1@Door<1>.Part` and `Door-1.Part` too), a parameter of its part `NAME@COMPONENT`, through a sub-assembly `…@Door-1@Door Assembly-1`; `value`. A number sets the part, so every instance of it (a linked part's file is written: the reply's `written`); an expression is an equation of the assembly, worked out at every rebuild. A value replaces an equation on it. `configurations` (of the assembly; left out, all of them while the equation is the same everywhere, else the active one): the equation is theirs, a number too; `value` `null` removes it there |
 | `set_suppression_expression` with `component` | `value`: an expression of the assembly (nonzero suppresses, 0 unsuppresses: SolidWorks' `suppressed` and `unsuppressed`), or `null` to clear. It decides over `suppress` while it is set. `configurations` as for `set` with a component |
-| `suppress` with a component's feature | `feature`: `FEATURE@COMPONENT` (`Vent@Door-1`), `on`: suppresses the feature in the component's part (every instance; a linked part's file is written) |
+| `suppress` with a component's feature | `feature`: `FEATURE@COMPONENT` (`Vent@Door-1`), `on`: suppresses the feature in the component's part, in the configuration the component shows (every instance showing it; a linked part's file is written) |
 | `reference_dimension` | `a`, `b` (ends as a mate's: flat faces, planes, edges, vertices), `name` (default `RD1`, `RD2`, …): the distance between them, measured after the mates are solved, which expressions read as `RD1@Annotations`. The reply's `reference` has its `value`. `delete` takes `reference_dimension` |
 | `make_independent` | `component`, `name`: the component gets a copy of its part, called `name`, and is renamed `name-1` (SolidWorks' Make Independent, FabSys's `ResolveComponent`). A linked part's copy is written beside its file as `name.peet` |
-| `in_context` | `component` (the part that follows: a component, or a path `[sub-assembly, …, part]` to a part inside a sub-assembly), then `sketch` (a sketch of that part, by name or id: an entity of it follows) or `feature` (a feature whose plane follows: a sketch's plane, a reference plane's base plane, or an extrude's or cut's end, which becomes up to it), `from` (what it follows: an end as a mate's on another component, `{"component": name or path, "edge"/"face"/"vertex"/"plane": selector}`, `{"component", "sketch", "entity"}` or `{"component", "origin": true}`, in that part's coordinates; or the assembly's own `{"plane": "top"/"front"/"right"}` or `{"origin": true}`; with `feature`, a flat face or a plane), `entity` (with `sketch`: an entity of the sketch that becomes the followed geometry, of the kind it is seen as: a point, line, circle or arc; left out, one is added), `construction` (with `sketch`; default true; false: a converted entity, part of the sketch's profiles). SolidWorks' in-context reference (a relation to, or a conversion of, another component's geometry; a sketch on its face, a plane on it, an extrusion up to it). A followed plane keeps the sketch's place and side on it. The reply's `entity` (or `plane_of`: the feature whose plane follows), and `in_context` (as `external_references` lists it). A linked part's file is written (a part of this assembly's own; one inside a sub-assembly changes in the assembly's copy) |
+| `in_context` | `component` (the part that follows: a component, or a path `[sub-assembly, …, part]` to a part inside a sub-assembly), then `sketch` (a sketch of that part, by name or id: an entity of it follows) or `feature` (a feature whose plane follows: a sketch's plane, a reference plane's base plane, or an extrude's or cut's end, which becomes up to it), `from` (what it follows: an end as a mate's on another component, `{"component": name or path, "edge"/"face"/"vertex"/"plane": selector}`, `{"component", "sketch", "entity"}` or `{"component", "origin": true}`, in that part's coordinates; or the assembly's own `{"plane": "top"/"front"/"right"}` or `{"origin": true}`; with `feature`, a flat face or a plane), `entity` (with `sketch`: an entity of the sketch that becomes the followed geometry, of the kind it is seen as: a point, line, circle or arc; left out, one is added), `construction` (with `sketch`; default true; false: a converted entity, part of the sketch's profiles). SolidWorks' in-context reference (a relation to, or a conversion of, another component's geometry; a sketch on its face, a plane on it, an extrusion up to it). A followed plane keeps the sketch's place and side on it. The reply's `entity` (or `plane_of`: the feature whose plane follows), and `in_context` (as `external_references` lists it). A linked part's file is written (a part of this assembly's own; one inside a sub-assembly changes in the assembly's copy). With no `component` and `feature` a reference plane of the assembly itself, that plane follows a component's face (SolidWorks' plane inserted in an assembly on a component's face), keeping the way it faces; `plane` (from 0) is which of its planes, for a mid plane between two faces; the reply's `follows` (`origin`, `normal`) is where the face is |
 | `external_references` | `component` (in an assembly: a component, or a path to a part or sub-assembly inside one; left out: every part, at any depth): `references`, each with `component` (its path, as names joined by ` / `; `path` too below the top level), `feature`, `use` (`entity`, `sketch_plane`, `plane`, `up_to`, ...: what follows), `sketch` and `entity` for an entity, `context` (the assembly's file it was made in), `made_in` (the instance), `follows` (the path of the component it follows; `on_assembly`: the context's own plane or origin), `what` (`face`, `edge`, `vertex`, `plane`, `origin`, `sketch_entity`), `geometry` (`point`, `line`, `circle`, `arc`, `plane`: how it is held), `at` (where, in the part's coordinates), `status` (`in_context`, `out_of_context`, `locked`, `broken` (a plane), `dangling` with `why`). A part inside a sub-assembly made in that sub-assembly is `in_context` as the sub-assembly's rebuild found it. In a part: its own references, `out_of_context`, `locked` or `broken` |
 | `lock_references` | `component` (in an assembly: a component or a path to a part in a sub-assembly; left out: every part with references), `feature` (left out: all of the part's), `on` (default true; `false` unlocks): SolidWorks' Lock: kept where they are in their context too. The reply's `changed` |
 | `break_references` | `component`, `feature` as for `lock_references`: SolidWorks' Break: each followed entity becomes plain fixed sketch geometry where it is, and each followed plane stays where it is for good (`broken`). The reply's `changed` |
+| `apply_smart_features` | `component` (the smart component: a name, id or path to one in a sub-assembly), `references` (the faces its smart features go on, in order: mate ends, `{"component", "face"}`, a path for a part in a sub-assembly). SolidWorks' smart components, FabSys's `ApplySmartFeatures`: each `smart_feature` of the component's part becomes, in the part whose face it is given, a sketch on the face whose curves are the smart sketch's converted in context (they follow the component; see in-context references) and a cut of it (`sheet_cut` in sheet metal, else a cut `up to next`, `blind` or `through all`), named as SolidWorks names them, `Smart-Feature1<HingeMale-1>` (numbered on in each part). A linked part is written (at any depth). A smart feature's `linear_pattern` in its part becomes a pattern of the cut, as many as it comes to in the smart part now. Each goes on the face given in its place (its `reference`); one whose cut would take nothing off that part is left out, as SolidWorks leaves it out. The reply's `applied` (each with `part`, `feature`, `sketch`, `smart_feature`, `reference`, `entities`, `patterns`: each pattern made and its count), `left_out` (each with `smart_feature`, `part`, `reference`, `why`) and `written` |
 | `dimensions` on an assembly | the assembly's own values (mates' `D1@MATE`, reference dimensions' `RD1@Annotations`), its `equations` (`target`, `expression`, `suppresses`, `status`, `message`; those of the active configuration, then those only others have with `expression` null; `configurations` with each one's expression in every configuration where it differs) and `references`; with `component`, that component's part's dimensions and parameters by their address from the assembly (`equation`: set by one); with `name`, the value at any address |
 | `rename`, `suppress`, `delete` | `mate` in place of `feature`. `suppress` takes `configurations` (of the assembly; default the active one) |
 | `mates` | every mate (`id`, `name`, `type`, `a`, `b`, `distance` or `angle`, `flip`, `align` if one was given, `flip_dimension`, `status`, `message`) and the `freedom` left |
@@ -832,7 +898,7 @@ component's flat face (`in_context` with `feature`), and a sketch can follow the
 assembly's own planes and origin.
 Anywhere else (the part on its own, another assembly, another instance of the part) the
 reference is `out_of_context` and keeps its last values. A locked reference keeps them in
-its context too; a broken one is plain fixed geometry. A linked part changed this way is
+its context too; a broken one is plain fixed geometry. A linked part changed this way (at any depth: inside a sub-assembly, the part's own file if it is linked, else the nearest linked sub-assembly's) is
 written when the context assembly is saved (the reply's `parts_written`); saving the
 assembly under another name keeps it the context.
 
@@ -902,6 +968,7 @@ part and sub-assembly once, as a product, and each component as an occurrence of
 | Operation | Fields |
 |---|---|
 | `flat_pattern` | `on` (left out: the other way). A view, not an undo step; selectors and exports always mean the folded part |
+| `sheet_metal` | any of `thickness`, `radius` (default inner bend radius), `bend` (`{"k_factor"}`, `{"allowance"}` or `{"deduction"}`); `feature` (a base flange or conversion; default the first). Sets what SolidWorks' Sheet-Metal feature holds. In an assembly, `component`: that component's part, every instance, and a linked part's file (`written`). Replies `sheet_metal` |
 | `apply_material` | `material`, and `gauge` or `thickness` (the nearest gauge); `feature` (a base flange; default the first). Also makes it the part's material, if the table has a density |
 | `set_gauge` | `material`, `gauge`, `thickness`, `radius`, `bend` (`{"k_factor": …}`, `{"allowance": …}` or `{"deduction": …}`), `notes`: adds a row, or changes one. `density` (kg/m³) is the material's, not the row's |
 | `delete_gauge` | `material`, `gauge` (left out: the whole table) |

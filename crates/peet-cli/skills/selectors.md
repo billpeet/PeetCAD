@@ -27,7 +27,7 @@ it and run again.
 | a plane | `"top"`, `"front"`, `"right"`, a reference plane's name, or a face selector for a flat face |
 | an axis | `"x"`, `"y"`, `"z"`, a reference axis's name, or an edge selector |
 | a point | `"origin"`, a reference point's name, or a vertex selector |
-| a face | `{"feature": "Extrude1", "side": "end"}` · `{"at": [x, y, z]}` · `{"normal": [x, y, z]}` · `{"body": 0, "index": 5}` |
+| a face | `{"feature": "Extrude1", "side": "end"}` · `{"at": [x, y, z]}` · `{"normal": [x, y, z]}` · `{"body": 0, "index": 5}` · `{"ray": {"from": [x, y, z], "direction": [x, y, z]}}` |
 | an edge | `{"between": [[x, y, z], [x, y, z]]}` · `{"at": [x, y, z]}` · `{"faces": [face, face]}` · `{"body": 0, "index": 7}` |
 | a vertex | `{"at": [x, y, z]}` · `{"body": 0, "index": 2}` |
 
@@ -52,6 +52,31 @@ given must match.
    selector). Or pick from the list by `body` and `index`, in the same call or the next
    (an index is only good until the part changes). A face's `center` there is a point on or near the face for telling faces
    apart, not its centroid: on a ring-shaped face it is off to one side.
+
+## A face by a ray, and SolidWorks' plane names
+
+- **`ray`** picks the face you would see looking along `direction` through the point
+  `from`: the first face on the whole line, coming from its far end, so faces before
+  `from` count too. This is SolidWorks' select by ray (`SelectByRay`), which FabSys uses:
+  its rays start on the enclosure's back plane, z = 0, and point along -z, yet select
+  the doors' mullions and the floor's front flange at z = 598. `from` only fixes the
+  line. Use it when you know where a face is seen from, not a point on it. It fails,
+  saying so, when the line meets nothing. In an assembly with no `component` it searches
+  every component shown (`peet skills assemblies`).
+- **`"Front Plane"`, `"Top Plane"`, `"Right Plane"`** (with ` Plane`) mean a reference
+  plane of that name if the document has one, else PeetCAD's standard plane.
+  `solidworks_planes` adds SolidWorks' three, oriented as SolidWorks has them, to a part
+  or assembly converted from SolidWorks; `top`, `front` and `right` are always
+  PeetCAD's own.
+
+```jsonl
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [60, 40]}]}
+{"op": "extrude", "sketch": "Sketch1", "depth": 6}
+{"op": "name_face", "face": {"ray": {"from": [30, 20, 100], "direction": [0, 0, -1]}}, "name": "TopFace"}
+{"op": "solidworks_planes"}
+{"op": "sketch", "on": "Front Plane", "draw": [{"type": "circle", "center": [30, 20], "radius": 3}]}
+{"op": "measure", "a": {"face": {"name": "TopFace"}}}
+```
 
 ## Things that go wrong
 
@@ -88,8 +113,9 @@ Assign names when later scripts need a particular face or edge, such as a mating
 or a hinge hole. First build the geometry and select it with the usual selectors.
 `name_face` accepts flat and curved faces; `name_edge` accepts edges. Use
 `{"name": "Front"}` wherever a face selector is accepted, including sketch planes
-and mate ends. A named curved face still cannot be a sketch plane. Names are
-case-sensitive and unique across faces and edges in a part. Several names can point
+and mate ends. A named curved face still cannot be a sketch plane. Names are unique
+across faces and edges in a part; as in SolidWorks, a name is found in any case where
+only one is alike (`{"name": "corner"}` finds `Corner`). Several names can point
 to the same geometry. `faces` and `edges` report the names in their `names` arrays.
 
 ```jsonl
@@ -99,7 +125,7 @@ to the same geometry. `faces` and `edges` report the names in their `names` arra
 {"op": "name_edge", "edge": {"between": [[0, 0, 0], [0, 0, 8]]}, "name": "Corner"}
 {"op": "edit", "feature": "Extrude1", "depth": 12}
 {"op": "sketch", "on": {"name": "Front"}, "draw": [{"type": "circle", "center": [40, 25], "radius": 5}]}
-{"op": "measure", "a": {"edge": {"name": "Corner"}}}
+{"op": "measure", "a": {"edge": {"name": "corner"}}}
 {"op": "faces"}
 {"op": "delete_name", "name": "Corner"}
 ```

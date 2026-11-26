@@ -162,6 +162,7 @@ pub(crate) fn constraint_refs(kind: &ConstraintKind) -> ([EntityId; 3], usize, u
             2,
             24 + 9 * along as u8 + 3 * sides[0] as u8 + sides[1] as u8,
         ),
+        SupplementaryAngle(a, b) => ([a, b, z], 2, 51),
     }
 }
 

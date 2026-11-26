@@ -2227,8 +2227,9 @@ fn a_profile_bend_with_its_own_model() {
         },
     ];
     let plane = Plane::front();
-    let err = Layout::open_profile(s, 1, &plane, &chain, [0.0, 50.0], false).unwrap_err();
-    assert!(err.contains("Corner 1"), "{err}");
+    // With the body's, it is folded (as SolidWorks folds it) but can't be unfolded
+    let folded = Layout::open_profile(s, 1, &plane, &chain, [0.0, 50.0], false).unwrap();
+    assert!(folded.unfold_error().is_some());
     let layout = Layout::open_profile_with(
         s,
         1,

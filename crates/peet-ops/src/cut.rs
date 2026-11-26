@@ -474,7 +474,7 @@ pub(crate) fn cut_out(doc: &Document, id: CutId) -> Value {
                 "origin": point3_out(p.origin(), units),
                 "normal": crate::args::direction_out(p.normal()),
             }),
-            CutPlane::Geom(end) => end_out(assembly, end),
+            CutPlane::Geom(end) => end_out(&doc.model, end),
         },
     );
     m.insert(
@@ -509,7 +509,7 @@ pub(crate) fn cut_out(doc: &Document, id: CutId) -> Value {
         .conversions
         .iter()
         .map(|c| {
-            let mut v = end_out(assembly, &c.edge);
+            let mut v = end_out(&doc.model, &c.edge);
             if let Some(e) = c.entity {
                 v["entity"] = json!(e.0);
             }

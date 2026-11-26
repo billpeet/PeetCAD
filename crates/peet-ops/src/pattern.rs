@@ -441,7 +441,7 @@ pub(crate) fn parse(op: &str, a: &mut Args) -> Option<Result<Op, String>> {
     })
 }
 
-fn line_out(doc: &Document, assembly: &Assembly, line: &PatternLine, axis: bool) -> Value {
+fn line_out(doc: &Document, line: &PatternLine, axis: bool) -> Value {
     match line {
         PatternLine::Fixed { origin, direction } => {
             if axis {
@@ -453,7 +453,7 @@ fn line_out(doc: &Document, assembly: &Assembly, line: &PatternLine, axis: bool)
                 direction_out(*direction)
             }
         }
-        PatternLine::Geom(end) => end_out(assembly, end),
+        PatternLine::Geom(end) => end_out(&doc.model, end),
     }
 }
 
@@ -489,10 +489,7 @@ pub(crate) fn pattern_out(doc: &Document, id: PatternId) -> Value {
         json!(names(&mut pattern.instances.iter().map(|i| i.component))),
     );
     let step_out = |m: &mut Map<String, Value>, s: &PatternStep| {
-        m.insert(
-            "direction".to_owned(),
-            line_out(doc, assembly, &s.direction, false),
-        );
+        m.insert("direction".to_owned(), line_out(doc, &s.direction, false));
         m.insert(
             "spacing".to_owned(),
             scalar_out(&s.spacing, ScalarKind::Length, doc),
@@ -517,7 +514,7 @@ pub(crate) fn pattern_out(doc: &Document, id: PatternId) -> Value {
             count,
             flip,
         } => {
-            m.insert("axis".to_owned(), line_out(doc, assembly, axis, true));
+            m.insert("axis".to_owned(), line_out(doc, axis, true));
             m.insert(
                 "angle".to_owned(),
                 scalar_out(angle, ScalarKind::Angle, doc),

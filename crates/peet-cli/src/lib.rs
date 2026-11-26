@@ -42,6 +42,8 @@ USAGE
   peet run [SCRIPT...] [options]        apply the operations of scripts (- or none: standard input)
   peet op JSON... [options]             apply operations given as JSON
   peet OPERATION [field=value...]       apply one operation, by name
+  peet serve [options]                  keep documents open and apply operations as they come:
+                                        one JSON operation per line in, one reply line out
   peet ops [OPERATION]                  list the operations, or one with its fields
   peet skills [NAME]                    how to use peet, for an agent: start with 'peet skills core'
   peet sessions                         list the running PeetCADs and the part each has open
@@ -84,6 +86,13 @@ LIVE
   there: it changes on screen, each change is an undo step, and it is saved only by a
   save operation. --live without --file applies to the one PeetCAD that is running.
   --new, --out and --materials work on files only: add --headless.
+
+SERVE
+  peet serve reads one operation per line on standard input and writes exactly one reply
+  line for it on standard output, flushed, before reading the next. The documents stay
+  open between operations (new, open, switch, save, close, documents), and nothing is
+  saved unless an operation saves it. {\"op\": \"exit\"} or the end of the input ends it.
+  An operation that fails, or a line that is not one, gets a reply with \"ok\": false.
 
 EXIT CODE
   0  every operation was applied
@@ -153,6 +162,8 @@ enum Command {
     Skills(Option<String>),
     /// List the running sessions.
     Sessions,
+    /// Apply operations as they come, one per line, keeping the documents open.
+    Serve,
     New(PathBuf),
     Dump(PathBuf, Option<PathBuf>),
     Pack(PathBuf, PathBuf),
@@ -231,6 +242,7 @@ fn parse(args: &[String]) -> Result<(Command, Options), String> {
         "ops" => Command::List(rest.first().cloned()),
         "skills" => Command::Skills(rest.first().cloned()),
         "sessions" => Command::Sessions,
+        "serve" => Command::Serve,
         "new" => Command::New(one("the part to make")?),
         "dump" => Command::Dump(one("the part to dump")?, rest.get(1).map(PathBuf::from)),
         "pack" => match &rest[..] {
@@ -532,6 +544,122 @@ fn run_live(
     OK
 }
 
+/// The text of a panic's payload.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_owned())
+}
+
+/// The reply to one line of `peet serve`: the operation applied to the session, or why
+/// it wasn't. Never panics: a panic inside the operation is caught and replied.
+fn serve_line(host: &mut Headless, session: &mut peet_document::Session, line: &str) -> Value {
+    let op: Value = match serde_json::from_str(line) {
+        Ok(op @ Value::Object(_)) => op,
+        Ok(_) => {
+            return json!({"ok": false, "op": null, "error": "A line is one operation: a JSON object with an \"op\". (A list of operations goes one per line.)"});
+        }
+        Err(e) => {
+            return json!({"ok": false, "op": null, "error": format!("This line is not valid JSON ({e}).")});
+        }
+    };
+    let name = op["op"].clone();
+    caught(&name, || {
+        apply_session_json(host, session, &op, Undo::Step).json
+    })
+}
+
+/// The reply `apply` makes, or, if it panics, a reply that says so.
+fn caught(name: &Value, apply: impl FnOnce() -> Value) -> Value {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(apply)).unwrap_or_else(|payload| {
+        json!({
+            "ok": false,
+            "op": name,
+            "error": format!(
+                "PeetCAD failed inside this operation (an internal error, not a mistake in it: {}). The document it was sent to may be partly changed: 'status' shows where it is, and 'undo' takes back a change it made.",
+                panic_text(payload.as_ref())
+            ),
+            "internal": true,
+        })
+    })
+}
+
+/// `peet serve`: one operation per line of `stdin`, one reply line each on `out`,
+/// flushed, with the documents kept open between them, until `{"op": "exit"}` or the end
+/// of the input.
+fn serve(
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    notes: &mut Notes,
+    materials: Option<&Path>,
+) -> i32 {
+    use std::io::BufRead;
+    let mut host = Headless::default();
+    let mut session = peet_document::Session::default();
+    if let Some(csv) = materials {
+        let reply = apply_in(
+            &mut host,
+            &mut session,
+            &Op::ImportMaterials {
+                file: Source::path(csv.to_path_buf()),
+            },
+            Undo::Step,
+        );
+        if !reply.ok {
+            notes.problem(&error_of(&reply));
+            return USAGE;
+        }
+    }
+    // A panic is replied to, so the default hook's message is only a note.
+    let quiet = notes.quiet;
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if !quiet {
+            eprintln!("peet serve: {info}");
+        }
+    }));
+    let mut lines = std::io::BufReader::new(stdin);
+    let mut line = String::new();
+    let code = loop {
+        line.clear();
+        match lines.read_line(&mut line) {
+            Ok(0) => break OK,
+            Ok(_) => {}
+            Err(e) => {
+                notes.problem(&format!("Couldn't read standard input: {e}"));
+                break USAGE;
+            }
+        }
+        let text = line.trim();
+        if text.is_empty() || text.starts_with('#') || text.starts_with("//") {
+            continue;
+        }
+        let exit = serde_json::from_str::<Value>(text).is_ok_and(|v| v["op"] == "exit");
+        let reply = if exit {
+            let unsaved: Vec<String> = session
+                .documents()
+                .filter(|(_, d)| d.is_modified())
+                .map(|(_, d)| d.title())
+                .collect();
+            json!({"ok": true, "op": "exit", "unsaved": unsaved})
+        } else {
+            serve_line(&mut host, &mut session, text)
+        };
+        print(out, &reply, false);
+        if out.flush().is_err() {
+            // Whoever reads the replies has gone.
+            break FAILED;
+        }
+        if exit {
+            break OK;
+        }
+    };
+    std::panic::set_hook(hook);
+    code
+}
+
 /// Runs the command line `args` (without the program's name). Replies go to `out`, notes
 /// and problems to `err`. Returns the exit code.
 pub fn run(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
@@ -659,6 +787,23 @@ pub fn run(args: &[String], stdin: &mut dyn Read, out: &mut dyn Write, err: &mut
                     }
                 }
             };
+        }
+        Command::Serve => {
+            for (given, option) in [
+                (options.file.is_some(), "--file"),
+                (options.out.is_some(), "--out"),
+                (options.new, "--new"),
+                (options.pretty, "--pretty"),
+                (options.live || options.pid.is_some(), "--live and --pid"),
+            ] {
+                if given {
+                    notes.problem(&format!(
+                        "'peet serve' doesn't take {option}: send operations ('open', 'save') instead, one reply per line."
+                    ));
+                    return USAGE;
+                }
+            }
+            return serve(stdin, out, &mut notes, options.materials.as_deref());
         }
         _ => {}
     }
@@ -921,6 +1066,21 @@ mod tests {
                 .contains("needs a value")
         );
         assert!(parse(&words(&["pack", "a.ron"])).is_err());
+    }
+
+    #[test]
+    fn a_panic_inside_an_operation_is_a_reply() {
+        let reply = caught(&json!("extrude"), || panic!("the kernel fell over"));
+        assert_eq!(reply["ok"], false);
+        assert_eq!(reply["op"], "extrude");
+        assert_eq!(reply["internal"], true);
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("the kernel fell over")
+        );
+        assert_eq!(caught(&json!("status"), || json!({"ok": true}))["ok"], true);
     }
 
     #[test]

@@ -82,8 +82,8 @@ pub use feature::{
     CornerFeature, EdgeFlangeFeature, ExtrudeFeature, Feature, FeatureId, FeatureKind, FoldFeature,
     FormFeature, HemFeature, JogFeature, LinearDirection, MirrorFeature, MiterFlangeFeature,
     PatternDef, PatternFeature, PlaneDef, PlaneRef, PointDef, PointRef, Scalar, ScalarKind,
-    SheetCutEnd, SheetCutFeature, SheetSettingsDef, SketchFeature, SketchedBendFeature, StdAxis,
-    StdPlane, UnfoldFeature,
+    SheetCutEnd, SheetCutFeature, SheetSettingsDef, SketchFeature, SketchedBendFeature,
+    SmartFeature, StdAxis, StdPlane, UnfoldFeature,
 };
 pub use history::History;
 pub use hole::{HoleEnd, HoleFeature, HoleFit, HoleKind, HoleSizes, METRIC, MetricSize};
@@ -100,7 +100,9 @@ pub use model::{
 };
 pub use naming::{Body, EdgeRef, FaceName, FaceOrigin, FaceRef, FaceRole, Found, VertexRef};
 pub use placement::face_sketch_plane;
-pub use regen::{Engine, Evaluation, FeatureState, Instance, Output, SketchStatus, Stats, Status};
+pub use regen::{
+    Engine, Evaluation, FeatureState, Instance, Output, SketchStatus, Stats, Status, smart_seeds,
+};
 pub use revolve::{
     RevolveAxisRef, RevolveFeature, RevolveInput, apply_revolve, default_axis, sketch_axis,
 };

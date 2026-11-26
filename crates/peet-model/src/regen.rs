@@ -305,6 +305,12 @@ struct Assembled {
     external: Vec<crate::in_context::Resolved>,
     /// Whether an in-context reference moved, so its part changed and must be rebuilt.
     in_context_changed: bool,
+    /// The assembly's own planes that follow its components, where they moved to.
+    own_moved: Vec<(
+        FeatureId,
+        crate::in_context::Holder,
+        crate::in_context::Geom,
+    )>,
 }
 
 /// A definition of an assembly, in one of its configurations: the definition, and the
@@ -312,6 +318,33 @@ struct Assembled {
 type PartKey = (DefId, Option<crate::ConfigId>);
 
 /// The part a component shows: its definition in the configuration it uses.
+/// The reference planes a model's own features made (built, or suppressed themselves), as mate ends
+/// see them: in the model's own coordinates.
+fn own_planes(
+    model: &Model,
+    states: &HashMap<FeatureId, FeatureState>,
+) -> Vec<mate::ComponentPlane> {
+    model
+        .features()
+        .filter_map(|feature| {
+            let state = states.get(&feature.id)?;
+            // A suppressed plane is still mated to, where it would be (see `rebuild`)
+            if !matches!(
+                state.status,
+                Status::Ok | Status::Warning(_) | Status::Suppressed
+            ) {
+                return None;
+            }
+            let plane = match state.output {
+                Output::Plane(p) => p,
+                Output::Frame(frame) => Plane { frame },
+                _ => return None,
+            };
+            Some((Vec::new(), PlaneRef::Feature(feature.id), plane))
+        })
+        .collect()
+}
+
 fn part_key(assembly: &crate::Assembly, c: &crate::Component) -> PartKey {
     (c.definition, assembly.configuration_of(c))
 }
@@ -451,6 +484,27 @@ impl Engine {
                     .find(|p| run.states.get(p).is_some_and(|s| s.status.is_suppressed()))
                     .map(Status::SuppressedBy)
             };
+            // A reference plane suppressed itself is still worked out where what it is made
+            // from is built: SolidWorks mates to a suppressed plane where it would be (FabSys
+            // mates Esc Surround Mid to Esc Surround R Bottom's suppressed Plane1). Nothing
+            // built on it is.
+            if skipped == Some(Status::Suppressed) && matches!(feature.kind, FeatureKind::Plane(_))
+            {
+                self.build(model, &feature, params_key, &mut run);
+                let output = match run.states.get(&id).map(|s| s.output) {
+                    Some(o @ (Output::Plane(_) | Output::Frame(_))) => o,
+                    _ => Output::None,
+                };
+                run.states.insert(
+                    id,
+                    FeatureState {
+                        status: Status::Suppressed,
+                        output,
+                        rebuilt: false,
+                    },
+                );
+                continue;
+            }
             if let Some(status) = skipped {
                 let output = match &feature.kind {
                     // Still drawn (dimmed) so it can be found and edited.
@@ -470,6 +524,17 @@ impl Engine {
                 );
                 continue;
             }
+            // A linear pattern up to a reference: its spacing (or count) as worked out from
+            // where the reference is, before its copies are made
+            let worked_out = match &feature.kind {
+                FeatureKind::Pattern(p) => Ctx {
+                    model,
+                    bodies: &run.bodies,
+                    states: &run.states,
+                }
+                .up_to_values(&p.def, &p.seeds),
+                _ => [None, None],
+            };
             let write_back = self.build(model, &feature, params_key, &mut run);
             if let Some((sketch, placement)) = write_back
                 && let Some(s) = model.feature_mut(id).and_then(Feature::sketch_mut)
@@ -477,13 +542,22 @@ impl Engine {
                 s.sketch = sketch;
                 s.placement = placement;
             }
+            if worked_out.iter().any(Option::is_some)
+                && run.states.get(&id).is_some_and(|s| s.status.is_built())
+            {
+                set_worked_out(model, id, worked_out);
+            }
         }
         self.cache.retain(|id, _| run.states.contains_key(id));
-        let mut assembled = self.assemble(model, &mut run.stats);
+        // An assembly's own reference planes (SolidWorks' planes inserted in the
+        // assembly): fixed ends for its mates, as its standard planes are.
+        let mut own = own_planes(model, &run.states);
+        let mut assembled = self.assemble(model, &mut run.stats, &own);
         // What the reference dimensions measure, which equations may read, and where the
         // geometry in-context parts follow is: a part an equation or an in-context
         // reference changes is rebuilt and the mates solved again, until nothing changes
-        // (SolidWorks solves the mates, then the in-context parts, and repeats).
+        // (SolidWorks solves the mates, then the in-context parts, and repeats). So are the
+        // assembly's own planes that follow its components.
         for round in 0..6 {
             let mut changed = false;
             if let Some(assembly) = model.assembly_mut() {
@@ -492,20 +566,38 @@ impl Engine {
                 }
             }
             let in_context = assembled.in_context_changed;
-            if !changed && !in_context {
+            let own_moved = !assembled.own_moved.is_empty();
+            if own_moved {
+                for (feature, holder, geom) in std::mem::take(&mut assembled.own_moved) {
+                    model.set_external_last(feature, holder, geom);
+                }
+                for index in 0..model.len() {
+                    let feature = model.feature_arc(index);
+                    if matches!(feature.kind, FeatureKind::Plane(_))
+                        && run
+                            .states
+                            .get(&feature.id)
+                            .is_some_and(|s| s.status.is_built())
+                    {
+                        self.build(model, &feature, params_key, &mut run);
+                    }
+                }
+                own = own_planes(model, &run.states);
+            }
+            if !changed && !in_context && !own_moved {
                 break;
             }
             // What expressions read now.
             model.refresh_dimension_values();
             let equations = model.assembly().is_some_and(|a| !a.equations().is_empty());
-            if (!equations && !in_context) || round == 5 {
+            if (!equations && !in_context && !own_moved) || round == 5 {
                 break;
             }
             if equations {
                 equation_failures = model.apply_equations();
                 model.sync_pattern_counts();
             }
-            assembled = self.assemble(model, &mut run.stats);
+            assembled = self.assemble(model, &mut run.stats, &own);
         }
         run.stats.ms = start.elapsed().as_secs_f64() * 1000.0;
         self.evaluation = Evaluation {
@@ -535,20 +627,7 @@ impl Engine {
             .into_iter()
             .map(|p| (Vec::new(), PlaneRef::Standard(p), p.plane()))
             .collect();
-        for feature in model.features() {
-            let Some(state) = self.evaluation.states.get(&feature.id) else {
-                continue;
-            };
-            if !matches!(state.status, Status::Ok | Status::Warning(_)) {
-                continue;
-            }
-            let plane = match state.output {
-                Output::Plane(p) => p,
-                Output::Frame(frame) => Plane { frame },
-                _ => continue,
-            };
-            planes.push((Vec::new(), PlaneRef::Feature(feature.id), plane));
-        }
+        planes.extend(own_planes(model, &self.evaluation.states));
         if let Some(assembly) = model.assembly() {
             for c in assembly.components().filter(|c| {
                 !c.suppressed
@@ -613,7 +692,12 @@ impl Engine {
     }
 
     /// Rebuilds definitions, solves mates and writes back solved placements.
-    fn assemble(&mut self, model: &mut Model, stats: &mut Stats) -> Assembled {
+    fn assemble(
+        &mut self,
+        model: &mut Model,
+        stats: &mut Stats,
+        own: &[mate::ComponentPlane],
+    ) -> Assembled {
         let Some(assembly) = model.assembly() else {
             self.parts.clear();
             self.drag = None;
@@ -765,11 +849,12 @@ impl Engine {
             .collect();
         let units: Vec<(CompId, bool)> = placed.iter().map(|c| (c.id, c.fixed)).collect();
         let planes: Vec<_> = placed.iter().map(|c| (c.id, &c.planes)).collect();
-        let key = hash::of(&(&mates, structure, units, &model.parameters, planes));
+        let key = hash::of(&(&mates, structure, units, &model.parameters, planes, own));
         let drag = self.drag.take();
         let solved = mate::solve(
             &mates,
             placed,
+            own,
             &model.parameters,
             key,
             &mut self.mates,
@@ -1001,6 +1086,14 @@ impl Engine {
                     .unwrap_or_default()
             },
         );
+        // The assembly's own planes on its components, where those now are (moved by the
+        // next round of `regenerate`).
+        let own_moved = crate::in_context::own_updates(model, &|id| {
+            let c = assembly
+                .component(id)
+                .filter(|c| !c.suppressed && !left_out.contains(&c.id))?;
+            place(c, frames.get(&id).copied().unwrap_or(c.placement))
+        });
 
         // ---- The components ----
         let mut instances = Vec::new();
@@ -1181,6 +1274,7 @@ impl Engine {
             references,
             external,
             in_context_changed,
+            own_moved,
         }
     }
 
@@ -1653,6 +1747,19 @@ impl Engine {
                     }
                 }
             }
+            // A pattern of smart features changes nothing here, as they don't: its copies
+            // are made where the smart component is applied (see `apply_smart_features`).
+            // Its count and spacing are still checked.
+            FeatureKind::Pattern(p) if smart_seeds(model, &p.seeds) => {
+                match ctx.pattern_motions(&p.def, &p.seeds) {
+                    Err(m) => fail(m, Output::None),
+                    Ok(_) => FeatureState {
+                        status: Status::Ok,
+                        output: Output::None,
+                        rebuilt: true,
+                    },
+                }
+            }
             FeatureKind::Pattern(p) => {
                 let inputs = (|| {
                     let motions = ctx.pattern_motions(&p.def, &p.seeds)?;
@@ -2074,6 +2181,16 @@ impl Engine {
                     }
                 }
             }
+            // A smart feature changes nothing here: it is a profile, made into a cut in the
+            // parts the component is applied to (see `apply_smart_features`).
+            FeatureKind::Smart(s) => match ctx.sketch_input(s.sketch) {
+                Err(m) => fail(m, Output::None),
+                Ok(_) => FeatureState {
+                    status: Status::Ok,
+                    output: Output::None,
+                    rebuilt: true,
+                },
+            },
             // Reference geometry is a few vector operations: always recomputed.
             FeatureKind::Plane(def) => reference(ctx.plane_def(def).map(Output::Plane)),
             FeatureKind::Axis(def) => reference(ctx.axis_def(def).map(Output::Axis)),
@@ -2164,6 +2281,36 @@ struct Run {
     stats: Stats,
     /// The hash of the values of the dimensions expressions read by address.
     dimensions_key: u64,
+}
+
+/// Puts the spacing (or count) a linear pattern up to a reference worked out into the
+/// pattern, where it follows from the reference (its other value is the one given), as
+/// SolidWorks shows the pattern's dimension at the value its copies are placed at: Back
+/// Wall's `D3@LPattern1` is the spacing over the wall's height, not the one last stored.
+/// A value an expression gives is left alone.
+fn set_worked_out(model: &mut Model, id: FeatureId, worked_out: [Option<(f64, u32)>; 2]) {
+    use crate::feature::PatternKeeps;
+    let Some(FeatureKind::Pattern(p)) = model.feature_mut(id).map(|f| &mut f.kind) else {
+        return;
+    };
+    let PatternDef::Linear { first, second } = &mut p.def else {
+        return;
+    };
+    for (d, w) in [Some(first), second.as_mut()].into_iter().zip(worked_out) {
+        let (Some(d), Some((spacing, count))) = (d, w) else {
+            continue;
+        };
+        let Some(keeps) = d.up_to.as_ref().map(|u| u.keeps) else {
+            continue;
+        };
+        let target = match keeps {
+            PatternKeeps::Count => (&mut d.spacing, spacing),
+            PatternKeeps::Spacing => (&mut d.count, f64::from(count)),
+        };
+        if target.0.expression.is_none() && target.0.value != target.1 {
+            target.0.value = target.1;
+        }
+    }
 }
 
 fn reused(state: &FeatureState) -> FeatureState {
@@ -2542,6 +2689,16 @@ impl<'m> Ctx<'m, '_> {
     }
 }
 
+/// Whether a pattern copies smart features only (and at least one).
+pub fn smart_seeds(model: &Model, seeds: &[FeatureId]) -> bool {
+    !seeds.is_empty()
+        && seeds.iter().all(|id| {
+            model
+                .feature(*id)
+                .is_some_and(|f| matches!(f.kind, FeatureKind::Smart(_)))
+        })
+}
+
 /// Identifies the copied features' inputs: their definitions and their sketches.
 fn seed_key(model: &Model, seeds: &[FeatureId], out_keys: &HashMap<FeatureId, u64>) -> u64 {
     let mut key = 0;
@@ -2745,6 +2902,11 @@ impl<'m> Ctx<'m, '_> {
                         height: self.scalar(&f.height, ScalarKind::Length, "Height")?,
                     }
                 }
+                FeatureKind::Smart(_) => {
+                    return Err(format!(
+                        "{name} is a smart feature, which a pattern copies only with other smart features: their copies are made where the smart component is applied. Pattern it on its own."
+                    ));
+                }
                 other => {
                     return Err(format!(
                         "{name} is a {}, which can't be copied: {}",
@@ -2829,7 +2991,12 @@ impl<'m> Ctx<'m, '_> {
                 Ok((spacing, n as u32))
             }
             PatternKeeps::Count => {
-                let n = self.scalar(&d.count, ScalarKind::Number, &format!("{what} count"))?;
+                let mut n = self.scalar(&d.count, ScalarKind::Number, &format!("{what} count"))?;
+                // Rounded where an expression gives it, as any pattern's count is (SolidWorks
+                // rounds an equation's count: Back Wall's ("Base Height" - 50) / 250 is 8 at 7.8)
+                if d.count.expression.is_some() {
+                    n = n.round();
+                }
                 if !(n.is_finite() && n.fract() == 0.0 && (2.0..=10_000.0).contains(&n)) {
                     return Err(format!(
                         "the count must be a whole number between 2 and 10000 (it is {n})"
@@ -2862,6 +3029,40 @@ impl<'m> Ctx<'m, '_> {
                 }
             }
         }
+        // A seed that left no faces of its own (holes where the part already has holes:
+        // SolidWorks' Gland Plate copies a hole on another pattern's corner holes) is
+        // where its sketch puts it: a hole's positions, or the points of another's profile
+        if !lo.x.is_finite() {
+            for &id in seeds {
+                let Some(feature) = self.model.feature(id) else {
+                    continue;
+                };
+                let (sketch, hole) = match &feature.kind {
+                    FeatureKind::Hole(h) => (h.sketch, true),
+                    FeatureKind::Extrude(e) => (e.sketch, false),
+                    FeatureKind::SheetCut(c) => (c.sketch, false),
+                    _ => continue,
+                };
+                let Ok((plane, sketch)) = self.sketch_input(sketch) else {
+                    continue;
+                };
+                let points: Vec<peet_math::DVec2> = if hole {
+                    crate::hole::hole_positions(sketch)
+                } else {
+                    sketch
+                        .entities()
+                        .filter(|(_, e)| !e.construction)
+                        .flat_map(|(_, e)| e.geometry.points())
+                        .map(|p| sketch.point(p))
+                        .collect()
+                };
+                for p in points {
+                    let w = plane.frame.to_world(DVec3::new(p.x, p.y, 0.0));
+                    lo = lo.min(w);
+                    hi = hi.max(w);
+                }
+            }
+        }
         if lo.x.is_finite() {
             Ok((lo + hi) / 2.0)
         } else {
@@ -2870,6 +3071,26 @@ impl<'m> Ctx<'m, '_> {
                     .to_owned(),
             )
         }
+    }
+
+    /// The spacing and count of each direction of a linear pattern that runs up to a
+    /// reference, worked out as its copies are placed (first direction, second): what
+    /// SolidWorks shows as the pattern's dimensions. `None` where a direction doesn't run
+    /// up to a reference, or can't be worked out.
+    fn up_to_values(&self, def: &PatternDef, seeds: &[FeatureId]) -> [Option<(f64, u32)>; 2] {
+        let PatternDef::Linear { first, second } = def else {
+            return [None, None];
+        };
+        let one = |d: &crate::feature::LinearDirection, what: &str| {
+            let u = d.up_to.as_ref()?;
+            let axis = self.axis(&d.direction).ok()?;
+            let dir = axis.dir * if d.flip { -1.0 } else { 1.0 };
+            self.up_to_reference(u, d, dir, seeds, what).ok()
+        };
+        [
+            one(first, "direction"),
+            second.as_ref().and_then(|d| one(d, "second direction")),
+        ]
     }
 
     /// Where a pattern's copies go (the original excluded).

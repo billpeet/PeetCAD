@@ -515,6 +515,19 @@ impl Model {
         self.features[index].clone()
     }
 
+    /// The features called `name`: those with exactly that name, or if there are none,
+    /// those with it in any case. SolidWorks matches feature and plane names without
+    /// case (`"wiv Mid Plane"` finds `WIV Mid Plane`).
+    pub fn features_named(&self, name: &str) -> Vec<&Feature> {
+        let exact: Vec<&Feature> = self.features().filter(|f| f.name == name).collect();
+        if !exact.is_empty() {
+            return exact;
+        }
+        self.features()
+            .filter(|f| f.name.eq_ignore_ascii_case(name))
+            .collect()
+    }
+
     /// The feature's name, or a placeholder if it no longer exists.
     pub fn name_of(&self, id: FeatureId) -> &str {
         self.feature(id).map_or("a deleted feature", |f| &f.name)
@@ -939,9 +952,17 @@ impl Model {
         self.rollback = self.rollback.filter(|&b| b < self.features.len());
         self.refresh_dimension_values();
         self.validate_configurations()?;
-        if self.assembly.is_some() && !self.features.is_empty() {
+        // An assembly's own features are its reference planes (SolidWorks' planes inserted
+        // in an assembly), and nothing else.
+        if self.assembly.is_some()
+            && self
+                .features
+                .iter()
+                .any(|f| !matches!(f.kind, FeatureKind::Plane(_)))
+        {
             return Err(
-                "The model is damaged: it is an assembly, and has features of its own.".to_owned(),
+                "The model is damaged: it is an assembly, and has features other than reference planes."
+                    .to_owned(),
             );
         }
         if let Some(assembly) = self.assembly_mut() {

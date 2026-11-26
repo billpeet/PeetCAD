@@ -276,6 +276,13 @@ impl Document {
         self.saved_hash = self.current_hash;
     }
 
+    /// Rebuilds the model from the start, reusing nothing remembered from earlier
+    /// rebuilds (SolidWorks' force rebuild).
+    pub fn force_rebuild(&mut self) {
+        self.engine.clear();
+        self.rebuild();
+    }
+
     /// Rebuilds the model and refreshes the bodies (tessellating only changed ones).
     pub fn rebuild(&mut self) {
         self.pending_rebuild = false;

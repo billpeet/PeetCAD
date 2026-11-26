@@ -2437,10 +2437,11 @@ fn links_are_relative_to_the_assemblys_folder() {
         links_in_file(&elsewhere)[2],
         ("bracket.peet".to_owned(), true)
     );
-    ok(&mut doc, json!({"op": "unlink", "part": "Bracket"}));
+    // Linked, it is known by its file's name.
+    ok(&mut doc, json!({"op": "unlink", "part": "bracket"}));
     ok(
         &mut doc,
-        json!({"op": "link", "part": "Bracket", "path": out, "absolute": true}),
+        json!({"op": "link", "part": "bracket", "path": out, "absolute": true}),
     );
     ok(&mut doc, json!({"op": "save"}));
     assert!(!links_in_file(&elsewhere)[2].1);
@@ -3597,6 +3598,37 @@ fn a_flexible_sub_assembly_moves_as_its_parents_mates_ask() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// A flexible sub-assembly replaced by a copy of its file keeps where what moves in it
+/// is, as SolidWorks does (FabSys points a door's hinges at the job's copy of the hinge,
+/// and the hinge's leaf must not swing round).
+#[test]
+fn a_flexible_sub_assembly_replaced_by_a_copy_keeps_its_pose() {
+    let dir = temp("flexible-replace");
+    let hinge = hinge_file(&dir);
+    let copy = dir.join("J1 hinge.peet").to_string_lossy().into_owned();
+    std::fs::copy(&hinge, &copy).unwrap();
+    let mut doc = assembly();
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": hinge, "name": "Hinge", "fixed": true}),
+    );
+    ok(&mut doc, json!({"op": "flexible", "component": "Hinge"}));
+    ok(
+        &mut doc,
+        json!({"op": "place", "component": ["Hinge", "Arm"], "rotate": {"axis": "z", "angle": 60}}),
+    );
+    let r = ok(
+        &mut doc,
+        json!({"op": "replace", "component": "Hinge", "path": copy}),
+    );
+    assert_eq!(
+        r["component"]["moving"][0]["rotate"],
+        json!({"axis": [0.0, 0.0, 1.0], "angle": 60.0}),
+        "{r}"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn a_flexible_sub_assembly_inside_a_flexible_one_moves_too() {
     let dir = temp("flexible-nested");
@@ -3648,5 +3680,48 @@ fn a_flexible_sub_assembly_inside_a_flexible_one_moves_too() {
     assert_eq!(d["moving"][0]["rotate"]["angle"], 90.0, "{d}");
     // The door's plate is 100 square; the arm reaches 70 along Y from the post.
     assert_eq!(d["max"], json!([50.0, 70.0, 130.0]));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A distance between a straight edge and a plane square to it, as SolidWorks takes one
+/// (the Door Assembly's rod guide to the door's return): from the edge's middle along the
+/// plane's normal, with the edge left square to it.
+#[test]
+fn a_distance_from_an_edge_square_to_a_plane_is_from_its_middle() {
+    let dir = temp("square-edge");
+    let (plate, _) = plate_and_pin(&dir);
+    let mut doc = assembly();
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": plate, "name": "Base"}),
+    );
+    ok(
+        &mut doc,
+        json!({"op": "insert", "path": plate, "name": "Lid", "at": [-30, 0, 5]}),
+    );
+    for op in [
+        json!({"op": "mate", "type": "coincident",
+               "a": {"component": "Base", "face": {"normal": [0, 0, 1]}},
+               "b": {"component": "Lid", "face": {"normal": [0, 0, -1]}}}),
+        json!({"op": "mate", "type": "parallel",
+               "a": {"component": "Base", "face": {"normal": [0, -1, 0]}},
+               "b": {"component": "Lid", "face": {"normal": [0, -1, 0]}}}),
+    ] {
+        let made = ok(&mut doc, op);
+        assert_eq!(made["mate"]["status"], "ok", "{made}");
+    }
+    // The lid's front bottom edge runs along x, square to the base's end face.
+    let made = ok(
+        &mut doc,
+        json!({"op": "mate", "type": "distance", "distance": 58,
+               "a": {"component": "Lid", "edge": {"at": [20, 0, 0]}},
+               "b": {"component": "Base", "face": {"normal": [1, 0, 0]}}}),
+    );
+    assert_eq!(made["mate"]["status"], "ok", "{made}");
+    // The edge's middle, (20, 0, 0) on the lid, 58 out from the base's end at x = 40.
+    let lid = placement(&doc, "Lid");
+    let middle = lid.to_world(DVec3::new(20.0, 0.0, 0.0));
+    assert!(((middle.x - 40.0).abs() - 58.0).abs() < 1e-6, "{lid:?}");
+    assert!((middle.z - 5.0).abs() < 1e-6, "{lid:?}");
     std::fs::remove_dir_all(dir).ok();
 }

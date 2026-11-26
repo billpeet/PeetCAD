@@ -162,6 +162,23 @@ pub fn point2_out(p: DVec2, units: &Units) -> Value {
     Value::from(vec![length_out(p.x, units), length_out(p.y, units)])
 }
 
+/// A sheet metal part's `flat_size`, or, for one that can't be unfolded, `no_flat_pattern`
+/// with why: a size worked out for a blank that can't be made would mislead.
+pub fn insert_flat(
+    m: &mut serde_json::Map<String, Value>,
+    flat_size: Option<DVec2>,
+    no_flat_pattern: Option<&str>,
+    units: &Units,
+) {
+    match flat_size {
+        Some(size) => m.insert("flat_size".to_owned(), point2_out(size, units)),
+        None => m.insert(
+            "no_flat_pattern".to_owned(),
+            Value::from(no_flat_pattern.unwrap_or_default()),
+        ),
+    };
+}
+
 pub fn point3_out(p: DVec3, units: &Units) -> Value {
     Value::from(vec![
         length_out(p.x, units),

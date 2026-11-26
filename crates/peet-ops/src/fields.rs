@@ -26,7 +26,8 @@ use peet_model::{
     EdgeRef, EndCondition, ExtrudeFeature, FaceName, FaceRef, FeatureId, FormFeature, HemFeature,
     JogFeature, LinearDirection, MirrorFeature, MiterFlangeFeature, Operation, PatternFeature,
     PlaneRef, PointRef, RegionSelection, Scalar, ScalarKind, SheetCutEnd, SheetCutFeature,
-    SheetSettingsDef, SketchFeature, SketchedBendFeature, StdAxis, StdPlane, VertexRef,
+    SheetSettingsDef, SketchFeature, SketchedBendFeature, SmartFeature, StdAxis, StdPlane,
+    VertexRef,
 };
 use peet_model::{
     BlendFeature, BlendKind, BodyMate, ConvertToSheetFeature, DraftFeature, FoldFeature, HoleEnd,
@@ -1400,6 +1401,19 @@ feature_args! {
 }
 
 feature_args! {
+    /// A smart feature: a cut this part makes in the part it is applied to in an assembly.
+    Smart: FeatureKind::Smart(f) => &mut **f, SmartFeature { sketch, reference, end, depth, reverse } => {
+    sketch: FeatureSel as SketchF = sketch,
+    /// Which of the faces `apply_smart_features` is given it goes on (0: the first).
+    reference: u32 as Count = reference,
+    /// How far it reaches into the part it is applied to.
+    end: SheetCutEnd as Choice<SheetCutEnd> = end,
+    depth: Input as Length = depth,
+    reverse: bool as Flag = reverse,
+    }
+}
+
+feature_args! {
     /// An edge of a sheet metal body folded back over itself.
     Hem: FeatureKind::Hem(f) => &mut **f,
         HemFeature { edge, kind, length, gap, radius, angle, inside, offset_start, offset_end, flip } => {
@@ -2427,6 +2441,9 @@ feature_ops! {
     SheetCut(SheetCut) "sheet_cut"
         "Cut a sketch through the sheet it is drawn on, in the flat pattern."
         => Some(FeatureKind::SheetCut(Box::new(SheetCutFeature::new(NO_SKETCH)))),
+    Smart(Smart) "smart_feature"
+        "Make this part a smart component (SolidWorks'): a cut, of one of its sketches, that 'apply_smart_features' makes in the part it is placed against in an assembly."
+        => Some(FeatureKind::Smart(Box::new(SmartFeature::new(NO_SKETCH)))),
     Hem(Hem) "hem"
         "Fold an edge of a sheet metal body back over itself ('edges' makes one per edge)."
         => Some(FeatureKind::Hem(Box::new(HemFeature::new(None)))),
@@ -2554,6 +2571,7 @@ fn word_of(kind: &FeatureKind) -> Option<&'static str> {
         FeatureKind::BaseFlange(_) => "base_flange",
         FeatureKind::EdgeFlange(_) => "edge_flange",
         FeatureKind::SheetCut(_) => "sheet_cut",
+        FeatureKind::Smart(_) => "smart_feature",
         FeatureKind::Hem(_) => "hem",
         FeatureKind::SketchedBend(_) => "sketched_bend",
         FeatureKind::Jog(_) => "jog",

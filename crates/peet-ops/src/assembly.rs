@@ -225,9 +225,11 @@ impl InsertSource {
                 let opened = peet_io::document::open(&bytes)
                     .map_err(|e| format!("Couldn't open {}: {}", file.shown(), e.message))?;
                 let mut model = opened.model;
-                // A part is known by its file's name, as in the application's title.
+                // A part is known by its file's name, as in the application's title and
+                // as SolidWorks names a component after the file it was inserted from: a
+                // copy of a template is its copy's name, not the template's.
                 let stem = file.name.strip_suffix(".peet").unwrap_or(&file.name);
-                if !stem.is_empty() && matches!(model.name.as_str(), "Part1" | "Assembly1") {
+                if !stem.is_empty() {
                     stem.clone_into(&mut model.name);
                 }
                 Ok(Arc::new(model))
@@ -262,6 +264,10 @@ pub enum ComponentChange {
     PlaceInner(Vec<CompSel>, Placing),
     /// Make it an instance of another part, where it is.
     Replace(InsertSource),
+    /// Make it an instance of the part in this file, which it then follows (a link,
+    /// relative to the assembly's folder if `true`), where it is: SolidWorks' replace
+    /// components, which points the component at another file.
+    ReplaceLinked(std::path::PathBuf, bool),
     /// A colour of its own, or (`None`) its part's again.
     Color(Option<[u8; 3]>),
     /// How see-through it is drawn: 0 opaque, 1 not seen at all.
@@ -281,7 +287,7 @@ impl ComponentChange {
             Self::Fix(_) => "fix",
             Self::Flexible(_) => "flexible",
             Self::Place(_) | Self::PlaceInner(..) => "place",
-            Self::Replace(_) => "replace",
+            Self::Replace(_) | Self::ReplaceLinked(..) => "replace",
             Self::Color(_) => "set_color",
             Self::Transparency(_) => "set_transparency",
             Self::Configuration(_) => "component_configuration",
@@ -467,7 +473,26 @@ pub(crate) fn parse(op: &str, a: &mut Args) -> Option<Result<Op, String>> {
             change(a, on)
         }
         "replace" => {
-            let from = InsertSource::parse("replace", a, false).map(ComponentChange::Replace);
+            let from = (|| {
+                let from = InsertSource::parse("replace", a, false)?;
+                let link = a.flag("link", false)?;
+                let absolute = a.flag("absolute", false)?;
+                if !link {
+                    if absolute {
+                        return Err("'absolute' is for a link: give 'link' too.".to_owned());
+                    }
+                    return Ok(ComponentChange::Replace(from));
+                }
+                match from {
+                    InsertSource::File(Source {
+                        path: Some(path), ..
+                    }) => Ok(ComponentChange::ReplaceLinked(path, !absolute)),
+                    _ => Err(
+                        "'link' follows a file, so it needs the part's 'path' (a .peet file on disk)."
+                            .to_owned(),
+                    ),
+                }
+            })();
             change(a, from)
         }
         // These words are a feature's too: they are a component's when given one.
@@ -596,6 +621,25 @@ pub(crate) fn wrong_kind(doc: &Document, op: &Op) -> Option<String> {
                 .model
                 .features()
                 .any(|f| matches!(f.kind, peet_model::FeatureKind::InsertPart(_))));
+    // An assembly has reference planes of its own (SolidWorks' planes inserted in an
+    // assembly, which its mates use): made, listed, changed, renamed and deleted as a
+    // part's are.
+    let planes = match op {
+        Op::Add(new) => new.iter().all(|n| {
+            matches!(
+                n.feature,
+                crate::FeatureArgs::OffsetPlane(_)
+                    | crate::FeatureArgs::AngledPlane(_)
+                    | crate::FeatureArgs::MidPlane(_)
+            )
+        }),
+        Op::Query(Query::Features) => true,
+        Op::Edit { .. } | Op::Rename { .. } | Op::Delete { .. } => {
+            doc.model.features().next().is_some()
+        }
+        _ => false,
+    };
+    let for_part = for_part && !planes;
     let word = op.word();
     if doc.is_assembly() && for_part {
         Some(format!(
@@ -1032,7 +1076,7 @@ pub(crate) fn change(
         ComponentChange::Place(_) | ComponentChange::PlaceInner(..) => Some("placed"),
         ComponentChange::Fix(_) => Some("fixed or let go"),
         ComponentChange::Flexible(_) => Some("made flexible or rigid"),
-        ComponentChange::Replace(_) => Some("replaced"),
+        ComponentChange::Replace(_) | ComponentChange::ReplaceLinked(..) => Some("replaced"),
         ComponentChange::Delete => Some("deleted"),
         _ => None,
     };
@@ -1044,7 +1088,23 @@ pub(crate) fn change(
         ComponentChange::Replace(from) => {
             let part = from.model(doc)?;
             check_not_itself(doc, &part)?;
-            Some(part)
+            Some((part, None))
+        }
+        ComponentChange::ReplaceLinked(path, relative) => {
+            crate::links::unavailable()?;
+            let own = doc.file.as_ref().and_then(|f| f.path.as_ref());
+            if own.is_some_and(|own| crate::links::same_file(own, path)) {
+                return Err(format!("{} can't be a component of itself.", doc.title()));
+            }
+            let part = Arc::new(crate::links::read(path, 0)?);
+            check_not_itself(doc, &part)?;
+            Some((
+                part,
+                Some(peet_model::Link {
+                    path: crate::links::full(path),
+                    relative: *relative,
+                }),
+            ))
         }
         _ => None,
     };
@@ -1126,6 +1186,7 @@ pub(crate) fn change(
                 | ComponentChange::Transparency(_)
                 | ComponentChange::Flexible(_)
                 | ComponentChange::Replace(_)
+                | ComponentChange::ReplaceLinked(..)
                 | ComponentChange::Delete
         )
     {
@@ -1138,7 +1199,9 @@ pub(crate) fn change(
         .assembly_mut()
         .ok_or_else(|| "The document is not an assembly.".to_owned())?;
     let gone = || "The component no longer exists.".to_owned();
-    Ok(match change {
+    // Components a replace renamed, before and after.
+    let mut renamed: Vec<(String, String)> = Vec::new();
+    let label = match change {
         ComponentChange::Suppress(_)
         | ComponentChange::Fix(_)
         | ComponentChange::Place(_)
@@ -1178,10 +1241,27 @@ pub(crate) fn change(
             }
             format!("Move {name}")
         }
-        ComponentChange::Replace(_) => {
-            let definition = assembly.define(replacement.ok_or_else(gone)?);
+        ComponentChange::Replace(_) | ComponentChange::ReplaceLinked(..) => {
+            let definition = match replacement.ok_or_else(gone)? {
+                (part, None) => assembly.define(part),
+                (part, Some(link)) => assembly.define_linked(part, link),
+            };
+            // The copies a pattern made of it go with it.
+            let copies: Vec<(CompId, String)> = assembly
+                .patterns()
+                .flat_map(|p| p.instances.iter().filter(|i| i.seed == id))
+                .map(|i| (i.component, assembly.name_of(i.component).to_owned()))
+                .collect();
             if !assembly.replace(id, definition) {
                 return Err(gone());
+            }
+            // Renamed after their new part: what the equations read of them follows.
+            for (c, before) in std::iter::once((id, was.clone())).chain(copies) {
+                let now = assembly.name_of(c).to_owned();
+                if now != before {
+                    assembly.rename_component_references(&before, &now);
+                    renamed.push((before, now));
+                }
             }
             format!("Replace {was}")
         }
@@ -1190,7 +1270,21 @@ pub(crate) fn change(
             assembly.remove(id).ok_or_else(gone)?;
             format!("Delete {was}")
         }
-    })
+    };
+    // Renamed by a replace: the assembly's parameters read them by name too.
+    let mut changed = false;
+    for (before, now) in &renamed {
+        for p in &mut model.parameters.entries {
+            if let Some(x) = peet_model::equations::rename_component(&p.expression, before, now) {
+                p.expression = x;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        model.parameters.evaluate();
+    }
+    Ok(label)
 }
 
 /// Links a part to a file: the file's part if there is one, else the part is written
@@ -1228,16 +1322,19 @@ pub(crate) fn link(
     let now = if path.is_file() {
         Arc::new(crate::links::read(path, 0)?)
     } else {
-        let bytes = peet_io::document::save(
-            &definition.model,
-            &peet_io::document::Metadata::default(),
-            None,
-        )
-        .map_err(|e| e.message)?;
+        // Known by its file's name from now on, as the file is read back.
+        let mut model = (*definition.model).clone();
+        if let Some(stem) = path.file_stem().map(|s| s.to_string_lossy())
+            && !stem.is_empty()
+        {
+            model.name = stem.into_owned();
+        }
+        let bytes = peet_io::document::save(&model, &peet_io::document::Metadata::default(), None)
+            .map_err(|e| e.message)?;
         peet_platform::write_file(path, &bytes)?;
-        definition.model.clone()
+        Arc::new(model)
     };
-    let label = format!("Link {}", now.name);
+    let label = format!("Link {}", definition.name());
     let assembly = model
         .assembly_mut()
         .ok_or_else(|| "The document is not an assembly.".to_owned())?;

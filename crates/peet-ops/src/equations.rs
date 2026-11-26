@@ -43,7 +43,7 @@ pub(crate) const EQUATION_OPS: &[(&str, &str, &str, &str)] = &[
         "assembly",
         "suppress",
         "feature (FEATURE@COMPONENT), on (default true)",
-        "Suppress a feature of a component's part (every instance of it), or unsuppress it.",
+        "Suppress a feature of a component's part, or unsuppress it, in the configuration of the part the component shows (every instance showing it).",
     ),
     (
         "assembly",
@@ -348,27 +348,24 @@ pub(crate) fn suppress_feature(
             assembly.name_of(c)
         ));
     }
-    let id = part
-        .features()
-        .find(|f| f.name == rest)
-        .or_else(|| {
-            let mut alike = part
-                .features()
-                .filter(|f| f.name.eq_ignore_ascii_case(&rest));
-            match (alike.next(), alike.next()) {
-                (Some(f), None) => Some(f),
-                _ => None,
-            }
-        })
-        .map(|f| f.id)
-        .ok_or_else(|| {
-            format!(
-                "{} (the part of {}) has no feature called '{rest}'.",
-                part.name,
-                assembly.name_of(c)
-            )
-        })?;
-    part.set_suppressed(id, on, &peet_model::Scope::default())?;
+    let found = part.features_named(&rest);
+    let id = found.first().map(|f| f.id).ok_or_else(|| {
+        format!(
+            "{} (the part of {}) has no feature called '{rest}'.",
+            part.name,
+            assembly.name_of(c)
+        )
+    })?;
+    // SolidWorks suppresses it in the configuration of the part the component shows (its
+    // referenced configuration), not the one the part has active: components showing
+    // other configurations of the part keep theirs.
+    let scope = assembly
+        .component(c)
+        .and_then(|comp| assembly.configuration_of(comp))
+        .map_or(peet_model::Scope::This, |shown| {
+            peet_model::Scope::Only(vec![shown])
+        });
+    part.set_suppressed(id, on, &scope)?;
     let label = format!(
         "{} {} of {}",
         if on { "Suppress" } else { "Unsuppress" },

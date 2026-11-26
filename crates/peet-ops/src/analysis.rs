@@ -5,7 +5,7 @@
 use peet_document::{BomRow, Document};
 use serde_json::{Map, Value, json};
 
-use crate::args::{length_out, point2_out, point3_out, round};
+use crate::args::{insert_flat, length_out, point3_out, round};
 use crate::assembly::CompSel;
 
 /// Where components run into each other.
@@ -73,7 +73,12 @@ fn row_out(doc: &Document, row: &BomRow) -> Value {
     }
     if let Some(sheet) = &row.sheet {
         m.insert("thickness".to_owned(), length_out(sheet.thickness, units));
-        m.insert("flat_size".to_owned(), point2_out(sheet.flat_size, units));
+        insert_flat(
+            &mut m,
+            sheet.flat_size,
+            sheet.no_flat_pattern.as_deref(),
+            units,
+        );
         m.insert("bends".to_owned(), json!(sheet.bends));
     }
     m.insert("components".to_owned(), json!(row.components));
@@ -144,12 +149,12 @@ pub(crate) fn bom_csv(doc: &Document, rows: &[BomRow]) -> String {
         let (thickness, width, height, bends) = row.sheet.as_ref().map_or_else(
             || (String::new(), String::new(), String::new(), String::new()),
             |s| {
-                (
-                    length(s.thickness),
-                    length(s.flat_size.x),
-                    length(s.flat_size.y),
-                    s.bends.to_string(),
-                )
+                // No flat pattern: no flat size either.
+                let (width, height) = s.flat_size.map_or_else(
+                    || (String::new(), String::new()),
+                    |f| (length(f.x), length(f.y)),
+                );
+                (length(s.thickness), width, height, s.bends.to_string())
             },
         );
         let fields = [

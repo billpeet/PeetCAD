@@ -33,7 +33,7 @@ pub(crate) const IN_CONTEXT_OPS: &[(&str, &str, &str, &str)] = &[
     (
         "an assembly",
         "in_context",
-        "component (the part that follows: a component's name or id, or a path [sub-assembly, ..., part] to a part inside a sub-assembly), sketch (a sketch of its part, by name or id: an entity of it follows) or feature (a feature of its part: its plane follows; a sketch's plane, a reference plane's base plane, or an extrude's or cut's end, which becomes up to it), from (what it follows: an end as a mate's on another component, {component: name or path, face|edge|vertex|plane: selector in that part's coordinates} or {component, sketch, entity} or {component, origin: true}; or the assembly's own {plane: top|front|right} or {origin: true}), entity (with sketch: an entity of the sketch to make follow it instead of adding one: its id), construction (with sketch; default true; false: a converted entity, part of the sketch's profiles)",
+        "component (the part that follows: a component's name or id, or a path [sub-assembly, ..., part] to a part inside a sub-assembly; left out with feature: a reference plane of the assembly itself follows), sketch (a sketch of its part, by name or id: an entity of it follows) or feature (a feature of its part: its plane follows; a sketch's plane, a reference plane's base plane, or an extrude's or cut's end, which becomes up to it), from (what it follows: an end as a mate's on another component, {component: name or path, face|edge|vertex|plane: selector in that part's coordinates} or {component, sketch, entity} or {component, origin: true}; or the assembly's own {plane: top|front|right} or {origin: true}), entity (with sketch: an entity of the sketch to make follow it instead of adding one: its id), construction (with sketch; default true; false: a converted entity, part of the sketch's profiles), plane (with feature: which of its planes follows, from 0; a mid plane has two)",
         "Make a part follow other geometry in this assembly (SolidWorks' in-context reference, made by editing the part in the assembly): with `sketch`, what `from` is seen as on the sketch's plane is a fixed entity of the sketch (Convert Entities, or a relation to another part); with `feature`, the feature's plane is `from`'s flat face or plane (a sketch on another part's face, a plane on it, an extrude up to it). This assembly moves it wherever that geometry goes. Opened alone, or in another assembly, the part keeps it where it last was.",
     ),
     (
@@ -85,7 +85,8 @@ pub enum InContextOp {
 #[derive(Clone, Debug, PartialEq)]
 pub enum MadeIn {
     Sketch(FeatureSel),
-    Plane(FeatureSel),
+    /// The feature, and which of its planes (a mid plane has two).
+    Plane(FeatureSel, usize),
 }
 
 impl InContextOp {
@@ -115,13 +116,15 @@ pub(crate) fn parse(op: &str, a: &mut Args) -> Option<Result<Op, String>> {
     Some(
         match op {
             "in_context" => (|| {
-                let component = a.required("component", parse_path)?;
+                // None: the assembly's own feature (a reference plane made in it)
+                let component = a.parsed("component", parse_path)?.unwrap_or_default();
+                let plane = a.parsed("plane", integer)?.unwrap_or(0);
                 let target = match (
                     a.parsed("sketch", FeatureSel::parse)?,
                     a.parsed("feature", FeatureSel::parse)?,
                 ) {
                     (Some(s), None) => MadeIn::Sketch(s),
-                    (None, Some(f)) => MadeIn::Plane(f),
+                    (None, Some(f)) => MadeIn::Plane(f, plane as usize),
                     _ => {
                         return Err(
                             "'in_context' needs 'sketch' (an entity of that sketch follows) or 'feature' (that feature's plane follows), not both."
@@ -131,8 +134,11 @@ pub(crate) fn parse(op: &str, a: &mut Args) -> Option<Result<Op, String>> {
                 };
                 let entity = a.parsed("entity", integer)?;
                 let construction = a.flag("construction", true)?;
-                if matches!(target, MadeIn::Plane(_)) && entity.is_some() {
+                if matches!(target, MadeIn::Plane(..)) && entity.is_some() {
                     return Err("'entity' is for 'sketch': with 'feature', the feature's plane follows.".to_owned());
+                }
+                if component.is_empty() && matches!(target, MadeIn::Sketch(_)) {
+                    return Err("'in_context' with 'sketch' needs 'component': the part whose sketch follows. Without it, 'feature' is a reference plane of the assembly itself.".to_owned());
                 }
                 Ok(InContextOp::Make {
                     component,
@@ -212,8 +218,8 @@ fn feature_in(part: &Model, sel: &FeatureSel) -> Result<FeatureId, String> {
             .map(|f| f.id)
             .ok_or_else(|| format!("{} has no feature with the id {}.", part.name, id.0)),
         FeatureSel::Name(name) => {
-            let mut found = part.features().filter(|f| f.name == *name);
-            match (found.next(), found.next()) {
+            let found = part.features_named(name);
+            match (found.first(), found.get(1)) {
                 (Some(f), None) => Ok(f.id),
                 (Some(_), Some(_)) => Err(format!(
                     "Several features of {} are called '{name}': give its id.",
@@ -234,7 +240,7 @@ fn feature_in(part: &Model, sel: &FeatureSel) -> Result<FeatureId, String> {
 }
 
 /// The names along a path of components, from the assembly's own.
-fn names_of(assembly: &Assembly, path: &[CompId]) -> Vec<String> {
+pub(crate) fn names_of(assembly: &Assembly, path: &[CompId]) -> Vec<String> {
     let mut names = Vec::new();
     let mut at: Option<Arc<Model>> = None;
     for id in path {
@@ -253,7 +259,7 @@ fn names_of(assembly: &Assembly, path: &[CompId]) -> Vec<String> {
 
 /// Where `target` is, in the coordinates of the part at `own`, as the assembly was last
 /// rebuilt.
-fn geometry(doc: &Document, own: &[CompId], target: &MateEnd) -> Result<Geom, String> {
+pub(crate) fn geometry(doc: &Document, own: &[CompId], target: &MateEnd) -> Result<Geom, String> {
     let geom = target.geom.as_ref().ok_or(
         "'from' names a whole component: give the face, edge, vertex, plane or sketch entity to follow.",
     )?;
@@ -262,7 +268,12 @@ fn geometry(doc: &Document, own: &[CompId], target: &MateEnd) -> Result<Geom, St
         eval.component_frame(p)
             .ok_or_else(|| "A component it involves is suppressed or not placed.".to_owned())
     };
-    let own = at(own)?;
+    // (No path: the assembly itself, whose coordinates these are)
+    let own = if own.is_empty() {
+        Frame::WORLD
+    } else {
+        at(own)?
+    };
     // The assembly's own planes and origin, where the assembly's origin is.
     if target.is_assembly() {
         let there = match geom {
@@ -314,7 +325,7 @@ fn same_kind(geometry: &Geometry, geom: &Geom, plane: Plane) -> bool {
 }
 
 /// Makes an entity of `sketch` follow `last` (`reference` built around it). Returns the entity.
-fn follow_entity(
+pub(crate) fn follow_entity(
     part: &mut Model,
     fid: FeatureId,
     entity: Option<u32>,
@@ -391,6 +402,7 @@ fn follow_entity(
 fn follow_plane(
     part: &mut Model,
     fid: FeatureId,
+    which: usize,
     last: Geom,
     reference: impl FnOnce(Geom) -> External,
 ) -> Result<(), String> {
@@ -416,15 +428,16 @@ fn follow_plane(
         kind => {
             let mut refs = kind.plane_refs_mut();
             match refs.len() {
-                1 => {
-                    *refs[0].1 = plane;
-                    Ok(())
-                }
                 0 => Err(format!(
                     "{name} has no plane to follow another component: give a sketch, a reference plane, or an extrude or cut (its end becomes up to it)."
                 )),
-                _ => Err(format!(
-                    "{name} is made from two planes: make a plane offset from the face instead, and use it."
+                n if which < n => {
+                    *refs[which].1 = plane;
+                    Ok(())
+                }
+                n => Err(format!(
+                    "{name} is made from {n} plane{}: 'plane' is which of them follows, from 0.",
+                    if n == 1 { "" } else { "s" }
                 )),
             }
         }
@@ -444,29 +457,69 @@ pub(crate) fn make(
     construction: bool,
 ) -> Result<(Vec<CompId>, FeatureId, Holder, String), String> {
     let assembly = the_assembly(doc)?;
-    let (own, own_names) = resolve_path(doc, component)?;
+    // No component: a reference plane of the assembly itself follows its component (as
+    // SolidWorks' plane made in an assembly on a component's face does).
+    let (own, own_names) = if component.is_empty() {
+        (Vec::new(), vec![doc.title()])
+    } else {
+        resolve_path(doc, component)?
+    };
     let name = own_names.join(" / ");
-    let shown = model_at(&doc.model, &own).ok_or("The component's part is gone.")?;
-    if shown.is_assembly() {
+    let mut part = if own.is_empty() {
+        doc.model.clone()
+    } else {
+        let shown = model_at(&doc.model, &own).ok_or("The component's part is gone.")?;
+        if shown.is_assembly() {
+            return Err(format!(
+                "{name} is a sub-assembly: an in-context reference belongs to a part. Give the path down to a part in it, as [\"{name}\", \"Part-1\"]."
+            ));
+        }
+        // The definition's model, which is what changes.
+        change_at(&doc.model, &own, &mut |m| m.clone())
+            .map(|(_, m)| m)
+            .ok_or("The component's part is gone.")?
+    };
+    let fid = match target_in {
+        MadeIn::Sketch(s) | MadeIn::Plane(s, _) => feature_in(&part, s)?,
+    };
+    if own.is_empty()
+        && !matches!(
+            part.feature(fid).map(|f| &f.kind),
+            Some(FeatureKind::Plane(_))
+        )
+    {
         return Err(format!(
-            "{name} is a sub-assembly: an in-context reference belongs to a part. Give the path down to a part in it, as [\"{name}\", \"Part-1\"]."
+            "{} is not a reference plane: in the assembly itself, only a reference plane follows a component.",
+            part.name_of(fid)
         ));
     }
-    // The definition's model, which is what changes.
-    let part = change_at(&doc.model, &own, &mut |m| m.clone())
-        .map(|(_, m)| m)
-        .ok_or("The component's part is gone.")?;
-    let mut part = part;
-    let fid = match target_in {
-        MadeIn::Sketch(s) | MadeIn::Plane(s) => feature_in(&part, s)?,
-    };
     let target = from.resolve(doc)?;
+    if own.is_empty() && target.is_assembly() {
+        return Err(
+            "'from' is the assembly's own: a plane of the assembly follows a component's face or plane."
+                .to_owned(),
+        );
+    }
     if target.path == own {
         return Err(format!(
             "'from' is on {name} itself: a sketch follows its own part's geometry with a sketch 'project', not in context."
         ));
     }
-    let last = geometry(doc, &own, &target)?;
+    let mut last = geometry(doc, &own, &target)?;
+    // The assembly's own plane faces the way it did, on the face (or each of a mid plane's
+    // two), as SolidWorks' plane on a face may face away from it
+    if own.is_empty()
+        && let Geom::Plane(p) = last
+    {
+        let like = match doc.evaluation().output(fid) {
+            Output::Plane(q) => Some(q),
+            Output::Frame(frame) => Some(Plane { frame }),
+            _ => None,
+        };
+        if let Some(like) = like {
+            last = Geom::Plane(plane_like(p, like));
+        }
+    }
     let target_names = names_of(assembly, &target.path);
     let reference = |last: Geom| External {
         context: doc.title(),
@@ -488,15 +541,20 @@ pub(crate) fn make(
             reference,
             &name,
         )?),
-        MadeIn::Plane(_) => {
-            follow_plane(&mut part, fid, last, reference)?;
-            Holder::Plane(0)
+        MadeIn::Plane(_, which) => {
+            follow_plane(&mut part, fid, *which, last, reference)?;
+            Holder::Plane(*which)
         }
     };
     let feature_name = part.name_of(fid).to_owned();
-    let (changed, _) = change_at(model, &own, &mut |m| *m = part.clone())
-        .ok_or("The component's part is gone.")?;
-    *model = changed;
+    if own.is_empty() {
+        // The assembly's own plane
+        *model = part;
+    } else {
+        let (changed, _) = change_at(model, &own, &mut |m| *m = part.clone())
+            .ok_or("The component's part is gone.")?;
+        *model = changed;
+    }
     if own.len() == 1
         && let Some(def) = model
             .assembly()
@@ -513,6 +571,14 @@ pub(crate) fn make(
         }
         Holder::Plane(_) => {
             data.insert("plane_of".to_owned(), json!(feature_name));
+            // Where the plane it now follows is (in the assembly's coordinates for the
+            // assembly's own plane, else the part's)
+            if let Geom::Plane(p) = last {
+                data.insert(
+                    "follows".to_owned(),
+                    json!({"origin": point3_out(p.origin(), &doc.model.parameters.units), "normal": [p.normal().x, p.normal().y, p.normal().z]}),
+                );
+            }
         }
     }
     let follows = if target.is_assembly() {
@@ -747,28 +813,57 @@ pub(crate) fn change(
 /// moved, as SolidWorks saves the parts an assembly changed with it. Returns the files
 /// written.
 pub(crate) fn write_moved_links(doc: &Document) -> Result<Vec<PathBuf>, String> {
-    let Some(assembly) = doc.model.assembly() else {
+    if !doc.model.is_assembly() {
         return Ok(Vec::new());
-    };
+    }
     let here = context_key(&doc.title());
-    let mut out = Vec::new();
-    for d in assembly.definitions() {
-        let Some(link) = &d.link else {
-            continue;
+    // The linked files to write: a linked part with references in this context at any
+    // depth, or the nearest linked sub-assembly above a part of its own that has them.
+    fn changed(model: &Model, here: &str, out: &mut Vec<(peet_model::Link, Arc<Model>)>) -> bool {
+        let Some(assembly) = model.assembly() else {
+            return false;
         };
-        if !d
-            .model
-            .external_references()
-            .iter()
-            .any(|r| context_key(&r.external.context) == here)
-        {
-            continue;
+        let mut own = false;
+        for d in assembly.definitions() {
+            let has = if d.model.is_assembly() {
+                changed(&d.model, here, out)
+            } else {
+                d.model
+                    .external_references()
+                    .iter()
+                    .any(|r| context_key(&r.external.context) == here)
+            };
+            if has {
+                match &d.link {
+                    Some(link) => out.push((link.clone(), d.model.clone())),
+                    None => own = true,
+                }
+            }
         }
+        own
+    }
+    let mut files = Vec::new();
+    changed(&doc.model, &here, &mut files);
+    // So are the linked parts the assembly's equations size, as SolidWorks writes the
+    // dimension into the part (Plinth PFC Assembly's pipes, as long as RD2 measures)
+    if let Some(assembly) = doc.model.assembly() {
+        for e in assembly.equations() {
+            if let peet_model::equations::EquationTarget::Dimension { component, .. } = &e.target
+                && let Some(d) = assembly.definition_of(*component)
+                && let Some(link) = &d.link
+                && !files.iter().any(|(l, _)| l.path == link.path)
+            {
+                files.push((link.clone(), d.model.clone()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (link, model) in files {
         crate::links::unavailable()?;
-        let path = crate::links::find(link, crate::links::folder(doc).as_deref())
+        let path = crate::links::find(&link, crate::links::folder(doc).as_deref())
             .unwrap_or_else(|| PathBuf::from(&link.path));
         let bytes = peet_io::document::save(
-            &d.model.for_file(path.parent()),
+            &model.for_file(path.parent()),
             &peet_io::document::Metadata::default(),
             None,
         )

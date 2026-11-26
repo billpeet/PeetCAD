@@ -782,6 +782,7 @@ pub fn reference_panel(
             | FeatureKind::BaseFlange(_)
             | FeatureKind::EdgeFlange(_)
             | FeatureKind::SheetCut(_)
+            | FeatureKind::Smart(_)
             | FeatureKind::Hem(_)
             | FeatureKind::SketchedBend(_)
             | FeatureKind::Jog(_)

@@ -4,7 +4,7 @@
  * of import.js made, and says how close each came out.
  *
  *   node tools/sw-import/import-asm.js <export.swx.json | folder of exports> <parts run folder> <output folder>
- *        [--peet <peet>] [--only <text>]
+ *        [--peet <peet>] [--only <text>] [--link]
  *
  * For each assembly it writes <name>.peet (an assembly), <name>.jsonl (the operations) and <name>.report.json.
  * A component is inserted where SolidWorks has it, then the mates are added: a mate that holds there moves
@@ -12,11 +12,18 @@
  *
  * Sub-assemblies are imported first, from their own export where there is one (Hinge Assembly), or else
  * from the components their parent lists under them (Escutcheon Surround, whose file is not in Templates).
+ *
+ * With --link the output folder is a library, as SolidWorks' Templates folder is: each part is copied into it
+ * (from the parts run folder) and every component, of a part or a sub-assembly, is inserted linked to the file
+ * beside the assembly (a relative link), so a copy of an assembly and its parts opens with the copies and a
+ * component can be swapped for another file, as FabSys does with SolidWorks' templates. Sub-assemblies are
+ * written into the output folder too, not under sub-assemblies\.
  */
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { displayPlan, applyDisplayPlan, componentLookOps } = require("./display-states");
+const { settleEquations } = require("./equation-state");
 
 const args = process.argv.slice(2);
 const option = name => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v; };
@@ -24,8 +31,10 @@ const repo = path.resolve(__dirname, "..", "..");
 const peetExe = option("--peet")
   || [path.join(repo, "target", "release", "peet.exe"), path.join(repo, "target", "debug", "peet.exe"), "peet"].find(p => p === "peet" || fs.existsSync(p));
 const only = option("--only");
+const flag = name => { const i = args.indexOf(name); if (i < 0) return false; args.splice(i, 1); return true; };
+const linked = flag("--link");
 if (args.length !== 3) {
-  console.error("Usage: node import-asm.js <export.swx.json | folder of exports> <parts run folder> <output folder> [--peet <peet>] [--only <text>]");
+  console.error("Usage: node import-asm.js <export.swx.json | folder of exports> <parts run folder> <output folder> [--peet <peet>] [--only <text>] [--link]");
   process.exit(2);
 }
 const [input, partsDir, outDir] = args.map(a => path.resolve(a));
@@ -136,9 +145,17 @@ const exportsByName = new Map();
 for (const f of fs.readdirSync(exportDir).filter(f => f.endsWith(".swx.json"))) exportsByName.set(f.replace(/\.swx\.json$/, "").toLowerCase(), path.join(exportDir, f));
 const exportOf = file => exportsByName.get(path.basename(file).toLowerCase());
 const partFileOf = file => {
-  const p = path.join(partsDir, path.basename(file).replace(/\.sldprt$/i, "") + ".peet");
-  return fs.existsSync(p) ? p : null;
+  const name = path.basename(file).replace(/\.sldprt$/i, "") + ".peet";
+  const p = path.join(partsDir, name);
+  if (!fs.existsSync(p)) return null;
+  if (!linked || path.resolve(partsDir) === path.resolve(outDir)) return p;
+  // A library: the part beside the assembly, copied once from the run (an assembly's in-context features may
+  // change it there afterwards, as SolidWorks' change the template part)
+  const there = path.join(outDir, name);
+  if (!copiedParts.has(there)) { fs.copyFileSync(p, there); copiedParts.add(there); }
+  return there;
 };
+const copiedParts = new Set();
 const partReport = file => {
   const p = path.join(partsDir, path.basename(file).replace(/\.sldprt$/i, "") + ".report.json");
   return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p)) : null;
@@ -197,7 +214,16 @@ const STANDARD_NORMALS = { top: [0, 0, 1], front: [0, -1, 0], right: [1, 0, 0] }
 
 // The faces and edges of each part file, as PeetCAD has them, to find a mate's end by its geometry
 const geometryCache = new Map();
-function geometryOf(file) {
+/**
+ * The parts the assembly being imported sizes by its equations: library copy -> the part as the run imported
+ * it. Their faces are looked for in the part as SolidWorks' export has it, not as an assembly's equations last
+ * wrote it into the copy (Plinth Folded's equation makes Pipe 308 mm and writes it when the assembly is saved;
+ * SolidWorks' Pipe, which both plinth assemblies mate to, is 300).
+ */
+let asExported = new Map();
+function geometryOf(view) {
+  const [f, c] = splitView(view);
+  const file = asExported.has(f) ? asExported.get(f) + (c ? `|${c}` : "") : view;
   if (geometryCache.has(file)) return geometryCache.get(file);
   const [faces, edges] = askView(file, [{ op: "faces" }, { op: "edges" }]);
   const g = { faces: (faces || {}).faces || [], edges: (edges || {}).edges || [] };
@@ -211,6 +237,16 @@ const norm3 = a => { const l = len3(a); return a.map(v => v / l); };
 /** Distance from a point to the line through `o` along unit `d`. */
 const offLine = (p, o, d) => { const v = sub3(p, o); const t = dot3(v, d); return len3(sub3(v, d.map(x => x * t))); };
 const TOL = 1e-3;   // mm
+/** How far off a part (mm) a point SolidWorks gives for one of its faces can be before it is no face of the part. */
+const NOWHERE = 1;
+/** How far a point (mm, in the part) is outside the box round the part's edges: 0 if it is in it. */
+function offPart(file, p) {
+  const { edges } = geometryOf(file);
+  const points = edges.flatMap(g => [g.from, g.to, g.center]).filter(Boolean);
+  if (!points.length) return 0;
+  const lo = [0, 1, 2].map(k => Math.min(...points.map(q => q[k]))), hi = [0, 1, 2].map(k => Math.max(...points.map(q => q[k])));
+  return Math.hypot(...[0, 1, 2].map(k => Math.max(lo[k] - p[k], 0, p[k] - hi[k])));
+}
 
 /**
  * What SolidWorks says a mate end is, in the part's coordinates (mm): a plane, an axis (a cylinder, a cone, a
@@ -528,7 +564,7 @@ function swDirection(e, comp) {
  * plane, axis or point) and `sign`: whether PeetCAD's direction for it is SolidWorks' (1) or the other way
  * (-1), so that SolidWorks' alignment and flipped dimension can be said in PeetCAD's terms.
  */
-function endOf(e, byPath, assembly, partFile, others = []) {
+function endOf(e, byPath, assembly, partFile, others = [], positional = true) {
   const own = !e.component || e.component === assembly;
   const isOrigin = e.entity && e.entity.kind === "sketchPoint" && e.entity.sketch === "Origin";
   const isPlane = e.entity && e.entity.kind === "feature" && e.entity.type === "RefPlane";
@@ -555,7 +591,7 @@ function endOf(e, byPath, assembly, partFile, others = []) {
       if (found) hits.push(comp.path);
     }
     if (!hits.length) return { error: "an end SolidWorks names the assembly for, with no entity: on a component it couldn't resolve (no face or edge of the assembly's parts is where its numbers put it)", unmatched: true };
-    const end = endOf({ ...e, component: hits[0] }, byPath, assembly, partFile);
+    const end = endOf({ ...e, component: hits[0] }, byPath, assembly, partFile, [], positional);
     return end.error ? end : { ...end, guessed: true, note: `SolidWorks names the assembly for an end with no entity; ${hits.length > 1 ? `of ${hits.join(", ")}, ` : ""}${hits[0]} has it` };
   }
   const comp = byPath.get(e.component);
@@ -589,6 +625,12 @@ function endOf(e, byPath, assembly, partFile, others = []) {
   let found = null;
   if (!e.entity && e.referenceType === 1 && shape.kind === "axis") found = findIn(file, { kind: "circle", c: shape.o, n: shape.d, r: shape.r });
   found = found || findIn(file, shape);
+  // A face SolidWorks gives only numbers for (a mate of a suppressed component, last solved long before) that
+  // are nowhere on the part: the face it was is not there now, and SolidWorks can't find it either when the
+  // component is unsuppressed (Plinth PFC Assembly's Coincident20 and Coincident23, 360 mm off Plinth PFC Long B,
+  // which fail in the jobs). A face that only lies in that plane somewhere else on the part is not it.
+  const off = positional && !e.entity && shape.kind === "plane" && shape.near ? offPart(file, shape.near) : 0;
+  if (found && off > NOWHERE) return { error: `SolidWorks' face is ${tidy(off)} mm off ${viewName(file)} (it was last solved for another size of it): no face of the part is it`, unmatched: true };
   if (!found) return { error: `no ${shape.kind === "plane" ? "flat face" : shape.kind === "axis" ? "round face or edge on that axis" : shape.kind === "straight" ? "straight edge on that line" : shape.kind} of ${viewName(file)} is where SolidWorks' is`, unmatched: true };
   const { dir, ...where } = found;
   const element = shape.kind === "plane" || shape.kind === "refplane" ? "plane" : shape.kind === "point" ? "point" : "axis";
@@ -820,7 +862,7 @@ function inContextHolders(cfg, report) {
     const row = { component: ic.component, feature: ft.name, type: ft.type, references: refs, ...(ends.length ? { end: ends[0] } : {}) };
     // The part's equations that name another component (`"D1@LPattern1@Gear tray<1>.Part" = …`)
     const exp = ft.type === "EqnFolder" && exportOf(ic.file || "");
-    const part = exp ? JSON.parse(fs.readFileSync(exp)) : null;
+    const part = exp ? settleEquations(JSON.parse(fs.readFileSync(exp))) : null;
     const eqs = part ? ((part.configurations || [])[0] || {}).equations || [] : [];
     const theirs = eqs.filter(e => /<\d+>\.Part/i.test(e.expression || ""));
     if (theirs.length && theirs.every(e => e.disabled)) { row.result = "nothing to import"; row.why = `equations of the part on another component's dimension, all disabled in SolidWorks: ${theirs.map(e => e.expression).join("; ")}`; }
@@ -865,9 +907,13 @@ function referenceEnds(cfg, rd, target, byPath, name, partFile) {
       ends.push({ e, h: dot3(e.params.slice(0, 3), L) });
     }
   });
+  // Not on the target, nor on another component of its part, which the equation changes too (Plinth PFC
+  // Assembly's RD2 sizes Pipe<1>, and the other pipe's end was as far from the plinth's face as its far channel)
+  const fileOf = c => (byPath.get(c) || {}).file;
+  const driven = c => c === target || (!!target && !!fileOf(target) && fileOf(c) === fileOf(target));
   const pairs = [];
   for (const x of ends) for (const y of ends) {
-    if (x.e.component === y.e.component || x.e.component === target || y.e.component === target) continue;
+    if (x.e.component === y.e.component || driven(x.e.component) || driven(y.e.component)) continue;
     if (x.h >= y.h || Math.abs(y.h - x.h - rd.value) > 1e-7) continue;
     pairs.push([x, y]);
   }
@@ -880,7 +926,7 @@ function referenceEnds(cfg, rd, target, byPath, name, partFile) {
   // Failing those, any two flat faces of the components (where SolidWorks has them) that far apart
   const faces = [];
   for (const c of cfg.components || []) {
-    if (c.path.includes("/") || c.path === target || c.suppression === 0) continue;
+    if (c.path.includes("/") || driven(c.path) || c.suppression === 0) continue;
     const file = partFile(c);
     if (!file) continue;
     const m = matrixOf(c.transform);
@@ -1194,6 +1240,92 @@ function importPatterns(peet, cfg, report, byPath, want, placeOf, insertPlain) {
  * the scope every component it reaches unless SolidWorks lists some. The other assembly-level features are
  * reported: layout sketches, composite curves and in-context feature holders (which PeetCAD's parts don't have).
  */
+/**
+ * The assembly's own reference planes (FabSys mates to GTBackMountPlane, Esc Mid), where SolidWorks has them: an
+ * offset of a standard plane, fixed (SolidWorks' follows the component face it was made on).
+ */
+function importPlanes(peet, cfg, report, local) {
+  const rows = [];
+  for (const f of cfg.features || []) {
+    if (f.type !== "RefPlane" || !f.planeTransform || /^(Front|Top|Right) Plane$/.test(f.name)) continue;
+    const row = { plane: f.name };
+    rows.push(row);
+    let m = matrixOf(f.planeTransform);
+    if (local) m = then(m, local);
+    const n = m.R[2], o = m.t.map(v => v * MM);
+    const axes = [["right", [1, 0, 0]], ["front", [0, -1, 0]], ["top", [0, 0, 1]]];
+    const axis = axes.find(([, d]) => Math.abs(Math.abs(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) - 1) < 1e-6);
+    if (!axis) { row.result = "left out"; row.why = "not square to an axis of the assembly"; continue; }
+    const distance = axis[1][0] * o[0] + axis[1][1] * o[1] + axis[1][2] * o[2];
+    // Facing the way SolidWorks' does (FabSys mates to it aligned or anti-aligned): where that is against the
+    // standard plane's normal, it is offset from that plane turned half round an axis in it
+    const against = axis[1][0] * n[0] + axis[1][1] * n[1] + axis[1][2] * n[2] < 0;
+    const turn = { op: "plane", from: axis[0], about: { right: "z", front: "z", top: "x" }[axis[0]], angle: 180 };
+    // Made on a component's face, or halfway between two (Plinth PFC Assembly's FrontPlane on its back channel,
+    // Escutcheon Door's Esc Mid between the escutcheon's ends): it follows them, as SolidWorks' does
+    if (!local && !f.suppressed) {
+      const following = followingPlane(peet, f, axis, against, turn);
+      if (following) { row.result = "imported"; row.note = following; continue; }
+    }
+    let made;
+    if (!against) made = peet.apply({ op: "plane", from: axis[0], distance: tidy(Math.abs(distance)), flip: distance < 0, name: f.name.trim() });
+    else if (Math.abs(distance) < 1e-9) made = peet.apply({ ...turn, name: f.name.trim() });
+    else {
+      const turned = f.name.trim() + " turned";
+      made = peet.apply({ ...turn, name: turned });
+      // The turned plane's normal is against the standard plane's: the distance along it is the other way
+      if (made.ok) made = peet.apply({ op: "plane", from: turned, distance: tidy(Math.abs(distance)), flip: distance > 0, name: f.name.trim() });
+      if (made.ok && f.suppressed) peet.apply({ op: "suppress", feature: turned });
+    }
+    row.result = made.ok ? "imported" : "failed";
+    if (!made.ok) row.why = made.error;
+    else row.note = "a fixed offset of the assembly's " + axis[0] + " plane";
+    if (f.suppressed && made.ok) peet.apply({ op: "suppress", feature: f.name.trim() });
+  }
+  if (rows.length) report.planes = rows;
+}
+
+/**
+ * An assembly's reference plane SolidWorks made on a component's face (coincident with it), or halfway between two
+ * components' faces, as a PeetCAD plane of the assembly that follows them (`in_context` on the assembly's own
+ * plane): first made on the standard plane `axis`, facing SolidWorks' way (`against` it: on that plane turned
+ * half round, `turn`), then put on the faces, keeping its facing. It must come out where SolidWorks' is. How it was
+ * made, or null with nothing left of it.
+ */
+function followingPlane(peet, f, axis, against, turn) {
+  const v = (f.definition || {}).values || {};
+  const refs = [0, 1, 2].map(i => ({ ref: v[`Reference[${i}]`], how: v[`Constraint[${i}]`], by: v[`AngleOrDistance[${i}]`] || 0 })).filter(r => r.ref);
+  const onFace = r => r.ref.kind === "face" && r.ref.component && r.ref.surface === "plane" && r.ref.point && r.ref.normal;
+  const kinds = refs.map(r => r.how).join(",");
+  const mid = kinds === "128,128" && refs.every(onFace);
+  const on = refs.length === 1 && refs[0].how === 4 && onFace(refs[0]);
+  if (!mid && !on) return null;
+  const name = f.name.trim();
+  const mark = peet.backup();
+  const undo = () => { peet.restore(mark); return null; };
+  // Its base, facing SolidWorks' way
+  let base = axis[0];
+  if (against && !peet.apply({ ...turn, name: name + " turned" }).ok) return undo();
+  if (against) base = name + " turned";
+  const first = mid ? { op: "plane", a: base, b: base, name } : { op: "plane", from: base, distance: 0, name };
+  if (!peet.apply(first).ok) return undo();
+  const end = r => ({ component: r.ref.component.split("/"), face: { at: (r.ref.point.map(x => x * MM)).map(tidy), normal: r.ref.normal.map(tidy) } });
+  const bases = [];
+  for (const [i, r] of refs.entries()) {
+    const reply = peet.apply({ op: "in_context", feature: name, ...(mid ? { plane: i } : {}), from: end(r) });
+    if (!reply.ok || !reply.follows) return undo();
+    bases.push(reply.follows);
+  }
+  // Where SolidWorks has it, facing its way: its plane (or halfway between its two)
+  const m = matrixOf(f.planeTransform);
+  const n = m.R[2], o = m.t.map(x => x * MM);
+  const at = bases.length === 2 ? bases[0].origin.map((x, k) => (x + bases[1].origin[k]) / 2) : bases[0].origin;
+  const facing = bases[0].normal;
+  const d = [0, 1, 2].reduce((s, k) => s + (at[k] - o[k]) * n[k], 0);
+  if ([0, 1, 2].reduce((s, k) => s + facing[k] * n[k], 0) < 1 - 1e-6 || Math.abs(d) > 1e-3) return undo();
+  return mid ? "halfway between the faces of components it was made from, which it follows" : "on the face of the component it was made on, which it follows";
+}
+
 function importAssemblyFeatures(peet, cfg, report, byPath, want, local) {
   const rows = [];
   const all = [];
@@ -1385,7 +1517,7 @@ function mateOp(f, byPath, name, want, row) {
   const partFile = comp => /\.sldprt$/i.test(comp.file || "") ? partOf(comp).view || null : null;
   const named = (f.mate.entities || []).map(e => e.component).filter(c => c && c !== name);
   if (kind === "path") return pathOp(f, byPath, name, want, row, partFile, named);
-  const ends = (f.mate.entities || []).map(e => endOf(e, byPath, name, partFile, named));
+  const ends = (f.mate.entities || []).map(e => endOf(e, byPath, name, partFile, named, !/^(parallel|perpendicular|angle|limit_angle)$/.test(kind)));
   const bad = ends.find(e => e.error);
   if (bad) { row.result = bad.unmatched ? "failed" : "not supported"; row.why = bad.error; return null; }
   // An end with no component is on the assembly's own plane or origin
@@ -1430,6 +1562,15 @@ function mateOp(f, byPath, name, want, row) {
       else if (values.ConstraintType === 2) { op.mode = "dimension"; op.distance = tidy(values.DistanceFromEnd * MM); }
       else if (values.ConstraintType === 3) { op.mode = "percent"; op.percent = tidy(values.PercentDistanceFromEnd * 100); }
       if (values.FlipDimension && op.mode) op.flip_dimension = true;
+      // Without a constraint type, centred if that holds where SolidWorks has the components: every slot mate
+      // of the library has its pin at the middle of its slot, and SolidWorks keeps it there in the jobs when the
+      // parts change size (Escutcheon Surround Removable's Slot3/Slot4: free, PeetCAD puts each pin at an end of
+      // its slot, as near as it can to where it was, and Esc Surround R R comes out 4 mm in). Free if not.
+      if (values.ConstraintType === undefined && !f.suppressed) {
+        row.alternatives = [{ op: { ...op }, replace: true, note: "free in its slot: centred doesn't hold where SolidWorks has the components (the export doesn't say the slot mate's constraint)" }];
+        op.mode = "centered";
+        row.note = "centred in its slot, where SolidWorks has its pin (the export doesn't say the slot mate's constraint)";
+      }
     } else if (kind === "limit_angle" || kind === "limit_distance") {
       const angle = kind === "limit_angle";
       const [lo, hi] = angle ? [values.MinimumAngle, values.MaximumAngle] : [values.MinimumDistance, values.MaximumDistance];
@@ -1544,6 +1685,13 @@ function addMate(peet, f, op, row, want) {
   const fine = status === "ok" || (status === "suppressed" && (f.suppressed || waits));
   if (!reply.ok || (status && !fine)) {
     peet.restore(mark);
+    // One the export doesn't settle that can't be added so: the next way it could be
+    const [alt, ...rest] = row.alternatives || [];
+    if (alt) {
+      row.alternatives = rest;
+      if (alt.note) row.note = alt.replace || !row.note ? alt.note : `${row.note}; ${alt.note}`;
+      return addMate(peet, f, alt.op, row, want);
+    }
     row.result = "failed";
     row.why = reply.error || (reply.mate && (reply.mate.message || reply.mate.status));
     return false;
@@ -1559,14 +1707,14 @@ function addMate(peet, f, op, row, want) {
       const other = peet.apply(alt.op);
       const placed = other.ok && other.mate && other.mate.status === "ok" ? peet.ask({ op: "components" }) : null;
       const off = placed ? tidy(offFrom(want, placed.components)) : Infinity;
-      if (off < best.moved) best = { moved: off, op: alt.op, note: alt.note };
+      if (off < best.moved) best = { moved: off, op: alt.op, note: alt.note, replace: alt.replace };
       if (off <= 1e-3) break;
     }
     peet.restore(mark);
     peet.apply(best.op);
     now = peet.ask({ op: "components" });
     moved = tidy(offFrom(want, now.components));
-    if (best.note) row.note = `${row.note ? row.note + "; " : ""}${best.note}`;
+    if (best.note) row.note = best.replace || !row.note ? best.note : `${row.note}; ${best.note}`;
   }
   delete row.alternatives;
   row.result = "imported";
@@ -1688,7 +1836,7 @@ function importAssembly(name, exp, outFile, listed = null, frame = null) {
     const { m, note } = placementOf(c, all, placeOf, local);
     if (note) row.placedBy = note;
     const rot = axisAngle(m);
-    const op = { op: "insert", path: source, name: c.path, at: m.t.map(v => tidy(v * MM)), ...(rot ? { rotate: rot } : {}), fixed: !!c.fixed, ...(configuration ? { configuration } : {}) };
+    const op = { op: "insert", path: source, ...(linked ? { link: true } : {}), name: c.path, at: m.t.map(v => tidy(v * MM)), ...(rot ? { rotate: rot } : {}), fixed: !!c.fixed, ...(configuration ? { configuration } : {}) };
     const reply = peet.apply(op);
     if (!reply.ok) { row.result = "failed"; row.why = reply.error; report.left.push(`${c.path}: ${reply.error}`); continue; }
     row.result = "inserted";
@@ -1718,7 +1866,16 @@ function importAssembly(name, exp, outFile, listed = null, frame = null) {
   // Component patterns, before the equations, which may drive their counts and spacings
   if (cfg) importPatterns(peet, cfg, report, byPath, want, placeOf, insertPlain);
 
-  // Equations, before the mates: a part an equation sizes (Plinth Folded's pipes) is mated at its size
+  // Equations, before the mates: a part an equation sizes (Plinth Folded's pipes) is mated at its size. Its
+  // faces are found in it as SolidWorks has it (`asExported`).
+  asExported = new Map();
+  for (const e of [cfg, ...others].flatMap(o => (o && o.equations) || [])) {
+    const m = /^\s*"[^"]*@([^"@]+)<\d+>\.Part"\s*=/i.exec(e.expression || "");
+    const c = m && all.find(x => /\.sldprt$/i.test(x.file || "") && path.basename(x.file.replace(/\\/g, "/")).replace(/\.sldprt$/i, "").toLowerCase() === m[1].trim().toLowerCase());
+    const copy = c && partFileOf(c.file);
+    const run = c && path.join(partsDir, path.basename(c.file.replace(/\\/g, "/")).replace(/\.sldprt$/i, "") + ".peet");
+    if (copy && run && path.resolve(copy) !== path.resolve(run)) asExported.set(copy, run);
+  }
   if (cfg && (cfg.equations || []).length) importEquations(peet, cfg, report, byPath, want, name);
 
   // Mates. One SolidWorks has suppressed here and live in another configuration is added in that one, where the
@@ -1752,6 +1909,9 @@ function importAssembly(name, exp, outFile, listed = null, frame = null) {
   // Assembly features: cuts with their sketches, after the mates (SolidWorks works them out after the mates);
   // what else the tree has at assembly level is reported
   if (cfg) importAssemblyFeatures(peet, cfg, report, byPath, want, local);
+  if (cfg) importPlanes(peet, cfg, report, local);
+  // SolidWorks' own Front, Top and Right Plane, as SolidWorks orients them: FabSys mates to them by name
+  peet.apply({ op: "solidworks_planes" });
 
   // Display states and the components' looks (format 8): only how the assembly is drawn
   if (cfg) importDisplayStates(peet, exp, cfg, report);
@@ -2098,20 +2258,26 @@ function anchorOf(c, all) {
  * parent lists under it.
  */
 const subs = new Map();
+// With --link: the assemblies imported into the library so far, by name
+const inLibrary = new Map();
 function importSub(c, all) {
   const exp = exportOf(c.file);
   const key = c.file.toLowerCase();
   if (subs.has(key)) return subs.get(key);
   const name = path.basename(c.file).replace(/\.sldasm$/i, "");
-  const file = path.join(outDir, "sub-assemblies", `${name}.peet`);
+  // In a library, an assembly imported already (as an assembly of its own or a sub-assembly) is that file
+  const done = linked && exp && inLibrary.get(name.toLowerCase());
+  if (done) { subs.set(key, done); return done; }
+  const file = linked ? path.join(outDir, `${name}.peet`) : path.join(outDir, "sub-assemblies", `${name}.peet`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   let made;
   try {
     if (exp) {
-      const j = JSON.parse(fs.readFileSync(exp));
+      const j = settleEquations(JSON.parse(fs.readFileSync(exp)));
       if (!j.configurations || !j.configurations.length) throw new Error("its export is empty: " + (j.error || ""));
       const r = importAssembly(name, j, file);
       made = { path: file, report: r, configurations: j.configurations.map(x => x.name) };
+      if (linked) inLibrary.set(name.toLowerCase(), made);
     } else {
       // Not exported (outside Templates): what its parent lists under it, placed relative to it
       const prefix = c.path + "/";
@@ -2131,13 +2297,21 @@ const inputs = fs.statSync(input).isDirectory()
   : [input];
 const summary = [];
 for (const file of inputs.filter(f => !only || path.basename(f).toLowerCase().includes(only.toLowerCase()))) {
-  const j = JSON.parse(fs.readFileSync(file));
+  const j = settleEquations(JSON.parse(fs.readFileSync(file)));
   const name = j.name || path.basename(file).replace(/\.sldasm\.swx\.json$/i, "");
   if (!j.configurations || !j.configurations.length) { summary.push({ name, verdict: "not exported", error: j.error }); console.log(`${"not exported".padEnd(60)} ${name}`); continue; }
   const started = Date.now();
   let r;
-  try { r = importAssembly(name, j, path.join(outDir, name + ".peet")); }
-  catch (e) { r = { name, verdict: "the importer failed", error: e.stack }; }
+  const done = linked && inLibrary.get(name.toLowerCase());
+  if (done) r = done.report;
+  else {
+    try {
+      const file = path.join(outDir, name + ".peet");
+      r = importAssembly(name, j, file);
+      if (linked) inLibrary.set(name.toLowerCase(), { path: file, report: r, configurations: j.configurations.map(x => x.name) });
+    }
+    catch (e) { r = { name, verdict: "the importer failed", error: e.stack }; }
+  }
   const mates = r.mates || [];
   const row = {
     name, verdict: r.verdict, seconds: Math.round((Date.now() - started) / 1000), off_mm: r.off_mm,

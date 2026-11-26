@@ -1,6 +1,6 @@
 ---
 name: assemblies
-description: Assemblies in peet - starting one, inserting parts as components, placing and turning them, mates that hold components together (coincident, concentric, distance, angle, parallel, fasten; a point kept on a path), dragging a mated component to pose a mechanism, component patterns (rows of copies, copies round an axis, counts and spacings from expressions), assembly cuts (cutting components in the assembly only, with a sketch on a plane or face and edges converted from components), configurations (a component showing one of its part's configurations, and an assembly's own configurations: left and right hinged, with components and mates suppressed, configured and placed per configuration, equations that differ per configuration, derived configurations), equations that size and suppress components from the assembly (SolidWorks addresses like Height@Sketch1@Door-1, reference dimensions, making a component independent), linked parts that follow their own files, interference between components, the bill of materials and the mass of the whole, hiding, isolating, colouring and making components see-through, display states (named looks of the assembly, linked to configurations or not), exploded views, STEP files with their assembly structure (import and export), replacing and deleting, changing a part of an assembly, sub-assemblies, saving and exporting.
+description: Assemblies in peet - starting one, inserting parts as components, placing and turning them, mates that hold components together (coincident, concentric, distance, angle, parallel, fasten; a point kept on a path), dragging a mated component to pose a mechanism, component patterns (rows of copies, copies round an axis, counts and spacings from expressions), assembly cuts (cutting components in the assembly only, with a sketch on a plane or face and edges converted from components), configurations (a component showing one of its part's configurations, and an assembly's own configurations: left and right hinged, with components and mates suppressed, configured and placed per configuration, equations that differ per configuration, derived configurations), equations that size and suppress components from the assembly (SolidWorks addresses like Height@Sketch1@Door-1, reference dimensions, making a component independent), linked parts that follow their own files, interference between components, the bill of materials and the mass of the whole, hiding, isolating, colouring and making components see-through, smart components (hardware that cuts its holes in the part it is placed on: SolidWorks smart features, FabSys ApplySmartFeatures), display states (named looks of the assembly, linked to configurations or not), exploded views, STEP files with their assembly structure (import and export), replacing and deleting, changing a part of an assembly, sub-assemblies, saving and exporting.
 ---
 
 # Assemblies
@@ -33,7 +33,12 @@ A file becomes an assembly by its script starting with `{"op": "new", "assembly"
   documents).
 - `sample`: a sample part.
 
-Components are named after their part: `Bracket-1`, `Bracket-2`. Pass `name` to choose.
+Components are named after their part, `Bracket-1`, `Bracket-2`, numbered as SolidWorks
+numbers them: one past the highest number that part's components have had in the
+assembly since it was opened, so a deleted or replaced component's number is not given
+again (FabSys's names depend on it). A part inserted from a file is called after the
+file (`J123 AL3 Door.peet` gives `J123 AL3 Door-1`, whatever the part was called where
+it was made). Pass `name` to choose.
 The reply's `component` has its name, where it is, and `min` and `max`: the box it
 occupies in the assembly. Check those against where it should be.
 
@@ -95,7 +100,9 @@ rough placement decides which of several possible positions is taken.
   - `concentric`: two axes in line (a pin in a hole).
   - `parallel`: planes or lines.
   - `distance` (with `distance`): the gap between two planes, or between points, lines
-    and planes.
+    and planes. A straight edge and a plane: the edge is kept along the plane, the
+    distance away; an edge square to the plane (as SolidWorks takes one) is measured
+    from its middle and stays square.
   - `angle` (with `angle`, in degrees, between 0 and 180): between two planes or lines.
   - `fasten`: `a` and `b` are components alone (`"a": "Plate"`). `b` keeps its place
     relative to `a` as it is now.
@@ -108,6 +115,12 @@ rough placement decides which of several possible positions is taken.
   or `align`, not both. Two axes (a pin in a hole) go whichever way is nearer unless
   `align` says: `aligned` points the axes alike, `anti_aligned` apart. An axis's
   direction is the `axis` that `faces` or `edges` gives for it, in its part.
+- **Which component turns over.** When a mate's planes (or axes) are the wrong way
+  round, the component its mates above hold less is turned over to suit it (the one
+  just inserted), as SolidWorks moves the newcomer: a component its own mates place
+  stays where it is. If neither can be turned without undoing the mates above, the mate
+  fails with "It can't be aligned (anti-aligned) with the mates above it": its `align`
+  contradicts them; change it, or the mate it contradicts.
 - **`flip_dimension`** measures a distance (or an angle) the other way. A distance from
   a flat face goes out along its outward normal, from the first end if it is a flat face:
   the other end is in front of the face. With `"flip_dimension": true` it is behind the
@@ -167,6 +180,9 @@ Use a plane when the mate locates a part by its datum rather than a solid face.
 `plane` takes the same selector as a sketch's `on`. Create named reference planes in
 the part before inserting it. A plane mate follows edits to that plane and keeps its
 reference when the plane is renamed. Standard planes work even in a part with no bodies.
+A reference plane suppressed in its part is still mated to, where it would be (as
+SolidWorks mates to Esc Surround R Bottom's suppressed Plane1), as long as what it is
+made from is built; nothing in the part is built on it.
 
 To reach a part inside a sub-assembly, give `component` a nonempty array from the
 assembly's own component down to the part. Each entry is a name or id in that level's
@@ -238,6 +254,13 @@ the arm is turned to 60° and then mated to turn to 90°, along Y.
 - **Mate into it** with a component path (`["Hinge", "Arm"]`), as for any part inside a
   sub-assembly. Then a mate that a rigid sub-assembly would fail ("can't hold") can
   turn the arm instead.
+- **A leaf facing the wrong way swings round its pin.** A mate to an arm that faces the
+  other way to the one the mate asks for fails ("can't be anti-aligned") while the
+  sub-assembly is rigid, and stays in the list as failed, as SolidWorks keeps it. Make
+  the sub-assembly flexible and the arm is swung round its pin to suit the mate (where
+  its own mates leave it free to), rather than the whole sub-assembly turned over, which
+  would undo the mates before. A door whose hinge leaves were saved facing different
+  ways comes right once it is flexible.
 - **Each instance is posed on its own**: two instances of one hinge can be open to
   different angles. The sub-assembly's file is not changed.
 - **`place`** takes a path to a component that moves in a flexible sub-assembly:
@@ -371,6 +394,49 @@ face is kept parallel to that face. Here the tab goes to X = 25, 17.5, then 14:
 The block's underside goes onto the assembly's top plane with its origin at the
 assembly's; the disc's bottom edge lies on the block's top and its axis goes through the
 sketch point (10, 5).
+
+### Planes made in the assembly, SolidWorks' planes, faces found by a ray
+
+Use these when components are placed against the assembly's own layout (SolidWorks'
+`InsertPlane` in an assembly, as FabSys lays out an enclosure), or the face to mate is
+known only by where it is in the assembly.
+
+```jsonl
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [100, 60]}]}
+{"op": "extrude", "sketch": "Sketch1", "depth": 6}
+{"op": "new", "assembly": true, "keep": true}
+{"op": "solidworks_planes"}
+{"op": "plane", "from": "Top Plane", "distance": -400, "name": "EnclBasePlane"}
+{"op": "insert", "part": 1, "name": "Floor"}
+{"op": "insert", "part": 1, "name": "Shelf", "at": [0, 300, 300]}
+{"op": "mate", "type": "coincident", "a": {"component": "Shelf", "face": {"normal": [0, -1, 0]}}, "b": {"plane": "EnclBasePlane"}}
+{"op": "mate", "type": "distance", "distance": 25, "a": {"plane": "Front Plane"}, "b": {"component": "Shelf", "face": {"normal": [0, 0, -1]}}}
+{"op": "insert", "part": 1, "name": "Lid", "at": [300, 0, 0]}
+{"op": "mate", "type": "coincident", "a": {"face": {"ray": {"from": [50, 30, 500], "direction": [0, 0, -1]}}}, "b": {"component": "Lid", "face": {"normal": [0, 0, -1]}}}
+{"op": "mates"}
+{"op": "components"}
+```
+
+The shelf's side goes to Y = -400 (400 below SolidWorks' Top Plane, along -Y) with its
+underside 25 in front of the Front Plane (Z = 25); the lid lands on the floor, the first
+face seen looking down through (50, 30).
+
+- **`plane` works in an assembly** (offset, angled, mid plane, from the assembly's
+  planes), as do `features`, `edit`, `rename` and `delete` on what it makes. A mate end
+  `{"plane": NAME}` with no `component` is on it; it doesn't move.
+- **`solidworks_planes`** adds SolidWorks' three standard planes as reference planes
+  called `Front Plane`, `Top Plane` and `Right Plane`, oriented as SolidWorks has them.
+  Use it in a document converted from SolidWorks (its coordinates are SolidWorks': Y
+  up): there SolidWorks' Front Plane is PeetCAD's `top`, and its Top Plane is PeetCAD's
+  `front` turned to face +Y. `"Front Plane"` (with ` Plane`) means the reference plane
+  of that name where there is one, else PeetCAD's own; `front`, `top`, `right` are
+  always PeetCAD's. It skips planes the document already has.
+- **`{"face": {"ray": {"from": [x, y, z], "direction": [x, y, z]}}}` with no
+  `component`** is the first face of any component met looking along `direction`
+  through `from`, in the assembly's coordinates (SolidWorks' select by ray: faces before
+  `from` count too); the reply's end says which component. Hidden
+  and suppressed components are passed through. With a `component`, the ray is in that
+  part's coordinates (`peet skills selectors`).
 
 ### Slot, limit and symmetric mates
 
@@ -685,6 +751,28 @@ moves on; unlocked, it catches up (140); broken, it stays 140 whatever the plate
 - **The assembly's own planes and origin** can be followed too: `from` with no
   `component`, `{"plane": "front"}` or `{"origin": true}` (SolidWorks relates a part's
   sketch to the assembly's Front Plane the same way).
+- **A reference plane of the assembly itself** follows a component's face when
+  `in_context` has no `component` and `feature` is the assembly's plane (SolidWorks' plane
+  inserted in an assembly on a component's face: FabSys mates a plinth by the plane on its
+  back channel). Make the plane first, offset 0 from a standard plane and facing the way
+  it should (it keeps that facing), then put it on the face. A mid plane follows two
+  faces: `plane` 0 and then `plane` 1. The reply's `follows` says where the face is. Mates
+  to the plane move with the component, and a sub-assembly's such plane is where its
+  components are wherever the sub-assembly is used.
+
+  ```jsonl
+  {"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [100, 60]}]}
+  {"op": "extrude", "sketch": "Sketch1", "depth": 6}
+  {"op": "new", "assembly": true, "keep": true}
+  {"op": "insert", "part": 1, "name": "Front", "fixed": true}
+  {"op": "insert", "part": 1, "name": "Back", "at": [0, 200, 0], "fixed": true}
+  {"op": "plane", "from": "front", "distance": 0, "name": "BackPlane"}
+  {"op": "in_context", "feature": "BackPlane", "from": {"component": "Back", "face": {"normal": [0, 1, 0]}}}
+  {"op": "plane", "a": "front", "b": "front", "name": "Between"}
+  {"op": "in_context", "feature": "Between", "plane": 0, "from": {"component": "Front", "face": {"normal": [0, 1, 0]}}}
+  {"op": "in_context", "feature": "Between", "plane": 1, "from": {"component": "Back", "face": {"normal": [0, -1, 0]}}}
+  {"op": "features"}
+  ```
 - **A part inside a sub-assembly** follows too. Made in the sub-assembly (its file is the
   context), it follows whenever the sub-assembly rebuilds, also inside a bigger assembly,
   which rebuilds its sub-assemblies first: `external_references` there lists it with the
@@ -712,11 +800,106 @@ The post runs up to the plate's top face, 15 tall, then 35 once the plate is 20 
 its left side (line 10) stays on the assembly's right plane. Broken, both stay where they
 are.
 
+## Smart components
+
+A smart component (SolidWorks') is a part that carries the cuts it needs in the part it is
+placed against: a hinge its screw holes in the door, a vent hood its cut-out in the wall.
+Use one for hardware placed many times: place it with mates, then apply its features.
+FabSys's `ApplySmartFeatures` is `apply_smart_features`.
+
+```jsonl
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [300, 200]}]}
+{"op": "base_flange", "sketch": "Sketch1", "thickness": 2}
+{"op": "new", "keep": true}
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [40, 20]}]}
+{"op": "extrude", "sketch": "Sketch1", "depth": 10}
+{"op": "set_parameter", "name": "Holes", "value": "2"}
+{"op": "sketch", "on": "top", "name": "Hinge Holes", "draw": [{"type": "circle", "center": [10, 10], "radius": 3}]}
+{"op": "smart_feature", "name": "HingeHoles", "sketch": "Hinge Holes"}
+{"op": "linear_pattern", "features": ["HingeHoles"], "direction": "x", "spacing": 20, "count": "Holes"}
+{"op": "new", "assembly": true, "keep": true}
+{"op": "insert", "part": 1, "name": "Door-1", "fixed": true}
+{"op": "insert", "part": 2, "name": "Hinge-1", "at": [50, 60, 2]}
+{"op": "apply_smart_features", "component": "Hinge-1", "references": [{"component": "Door-1", "face": {"normal": [0, 0, 1]}}]}
+{"op": "place", "component": "Hinge-1", "at": [150, 100, 2]}
+{"op": "external_references", "component": "Door-1"}
+```
+
+The door gets two 6 mm holes under the hinge (`Smart-Feature1<Hinge-1>`); when the hinge moves,
+they move with it.
+
+- **In the part: `smart_feature`.** `sketch` is a sketch of the part, drawn where the other
+  part's face will be (usually on the face or plane the part sits on): its lines, arcs and
+  circles are the profile. When the component cuts several parts (a plinth bolt
+  through a floor and a plinth), `reference` (default 0) is its place in the order of
+  the faces `apply_smart_features` is given: it goes on that face, wherever its sketch
+  is, as SolidWorks takes its library features' references in order. `end`: `sheet` (default: through the sheet or the
+  material the face is on), `blind` with `depth`, `through_all`; `reverse` cuts away from
+  the part. It changes nothing in the part itself. Several smart features may share a face.
+- **Patterned: `linear_pattern` of smart features (no other features with them).**
+  The cut is patterned where it is applied, with the count and spacing the pattern has in
+  the smart part at that moment: give them as expressions of the part's sizes
+  (`"(INT((\"Length@Sketch1\" - 25) / 175 + 0.999999) + 1) / 1mm"`) and size the part
+  before applying, as SolidWorks works out a library feature's equations when it is
+  applied. Its direction must come to an axis of the part it is applied in. The applied
+  pattern doesn't change if the smart part is resized afterwards: apply again.
+- **In the assembly: `apply_smart_features`.** `component` is the smart component (a path
+  for one in a sub-assembly, as `["Door Assembly-1", "Hinge Assembly-1", "HingeMale-1"]`);
+  `references` the faces, in order, each a mate end on the part to cut (a path for a part
+  in a sub-assembly). Each smart feature becomes, in that part, a sketch on the face whose
+  entities are the smart sketch converted in context (they follow the component, see
+  "In-context references") and a cut of it: a sheet metal cut in sheet metal, else a cut
+  through the material (`up to next`). They are named as SolidWorks names them,
+  `Smart-Feature1<HingeMale-1>`, numbered on in each part. The reply's `applied` lists
+  them, and `written` any linked file changed.
+- **Left out, not failed:** a smart feature whose cut would take nothing off its part
+  (its sketch is off the face it was given: the faces given in the wrong order, or the
+  component not where it should be) is not made, as SolidWorks leaves it out. The reply's
+  `left_out` lists each, with the part and why. Check it: an empty `applied` usually
+  means the faces are in the wrong order or the component is misplaced.
+- **Fails when** the component's part has no smart features ("not a smart component":
+  add them with `smart_feature`, or use the right component), fewer faces are given than
+  its features use (the error lists which feature goes on which face), a face is the
+  component's own or not flat, or the sketch can't be seen flat on the face (the face is
+  not parallel to the smart sketch: give the face the component sits against).
+
 ## Changing components
 
 `rename`, `suppress`, `show` and `delete` take `component` instead of `feature`.
 `replace` makes a component an instance of another part, where it is. Deleting the last
 component of a part removes the part from the assembly.
+
+- **`replace` with `path` and `"link": true`** points the component at that file, as
+  SolidWorks' replace components does: use it to swap a template's component for the
+  job's copy of its file. The component keeps its mates (its new part's faces are
+  found as the old part's were, so a copy of the same part fits exactly) and shows the
+  new part's configuration of the same name. A component named after its part
+  (`Door-2`) is renamed after the new one with its number (`J1 Door-2`; the next one if
+  that name is taken), and the assembly's equations and parameters that read it
+  (`"Width@Sketch1@Door-2"`) read the new name; one given its own name keeps it.
+  Without `link` the part is copied into the assembly.
+  A flexible sub-assembly replaced by a copy of its file keeps where what moves in it
+  is (a hinge's leaf stays as it was).
+- **Replacing a pattern's original replaces its copies too**, as in SolidWorks, where
+  they are instances of the original's file: each keeps its number (`Gear tray
+  bracket-13` becomes `J1 MS2 Gear tray bracket 1-13`). Don't replace the copies
+  yourself; `replace` on a copy fails.
+- Only `path` can be linked; `"absolute": true` keeps the link a full path.
+
+```jsonl
+{"op": "new", "assembly": true}
+{"op": "insert", "sample": "bracket"}
+{"op": "insert", "sample": "bracket", "at": [0, 100, 0]}
+{"op": "delete", "component": "Bracket-2"}
+{"op": "insert", "sample": "bracket", "at": [0, 200, 0]}
+{"op": "component_pattern", "components": ["Bracket-1"], "type": "linear", "direction": "x", "spacing": 150, "count": 3}
+{"op": "replace", "component": "Bracket-1", "sample": "housing"}
+{"op": "components"}
+```
+
+The third bracket is `Bracket-3`, not `-2`: `Bracket-2` was deleted. The pattern's
+copies, `Bracket-4` and `-5`, become `Housing-4` and `Housing-5` with their original,
+`Housing-1`.
 
 ## Showing, hiding, colouring, exploding
 
@@ -878,7 +1061,9 @@ door is over 1500 high, so the last `set` suppresses it.
   expression is not 0, and unsuppresses it while it is 0 (SolidWorks' `suppressed` is 1,
   `unsuppressed` 0). It decides over `suppress` until cleared with `"value": null`.
 - **`suppress` with `"feature": "FEATURE@COMPONENT"`** suppresses (or with `"on": false`
-  unsuppresses) a feature of the component's part, in every instance of it.
+  unsuppresses) a feature of the component's part, in the configuration of the part the
+  component shows (as SolidWorks does): every component showing that configuration
+  follows; those showing another configuration of the part keep theirs.
 - **`reference_dimension`** measures the distance between two ends (as a mate's: two
   parallel flat faces or planes, a point and a plane, points, lines) where the mates put
   the components. Expressions read it as `RD1@Annotations`, as SolidWorks does, so a pipe
@@ -1106,8 +1291,8 @@ Run these when the assembly is put together, before calling it done.
   `unchecked` is a pair that could not be compared: treat it as not known, not as
   clear. `"component": NAME` checks just that component against the others.
 - **`bom`** lists each part once with its `quantity`, `material`, `mass_kg` (of one)
-  and `total_mass_kg`, and for a sheet metal part its `thickness`, `flat_size` and
-  `bends`: what to order and cut. By default the parts inside sub-assemblies are counted
+  and `total_mass_kg`, and for a sheet metal part its `thickness`, `flat_size` (or
+  `no_flat_pattern`: see the `sheet-metal` skill) and `bends`: what to order and cut. By default the parts inside sub-assemblies are counted
   with the rest; `"level": "top"` lists a sub-assembly as one line.
   `{"op": "export", "path": "bom.csv"}` writes it as a table.
 - **`mass`** gives each component's mass and centre of gravity, and the whole's under

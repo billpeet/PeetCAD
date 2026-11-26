@@ -36,6 +36,31 @@ features. It always has an exact **flat pattern**, which is what the DXF export 
   sheet is slit). `relief_ratio`: its width, and how far it reaches past the bend, as a
   multiple of the thickness (default 0.5).
 
+### Changing a part's sheet metal: `sheet_metal`
+
+To change the thickness, bend radius or bend model of a sheet metal part that is already
+built (a template set to the job's gauge, as FabSys sets SolidWorks' `Sheet-Metal`
+feature), use `sheet_metal` rather than finding its base flange's name: it changes the
+first base flange (or conversion to sheet metal), or the one `feature` names, and every
+flange that takes the body's settings follows.
+
+```jsonl
+{"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [200, 150]}]}
+{"op": "base_flange", "sketch": "Sketch1", "thickness": 2, "radius": 1}
+{"op": "edge_flange", "length": 25, "edge": {"between": [[0, 0, 2], [200, 0, 2]]}}
+{"op": "sheet_metal", "thickness": 3, "radius": 0.2, "bend": {"deduction": 4.5}}
+{"op": "bodies"}
+```
+
+- Give any of `thickness`, `radius`, `bend` (`{"deduction": ...}`, `{"k_factor": ...}`
+  or `{"allowance": ...}`); the reply's `sheet_metal` has what the feature holds now.
+- In an assembly, add `component`: it changes that component's part, so every instance
+  of it, and writes a linked part's file (`written`). FabSys's `ConfigurePartSheetMetal`
+  is this.
+- A conversion to sheet metal takes no `radius` (its bends keep the solid's).
+- `Thickness@Sheet-Metal`, where a converted part has that address, is the same value:
+  `set` it, or use this.
+
 ## Tabs
 
 A tab adds a flat piece to a sheet metal body: a closed sketch on a flat face of the
@@ -254,8 +279,10 @@ X and y along its Z, so `[80, 12]` to `[100, 20]` is x 80 to 100, z 12 to 20.
   own (`{"deduction": 3.5}`, or `k_factor` or `allowance`): for the one bend the press
   brake makes differently, such as a bend at another angle. The folded part is the
   same; the blank is that much longer or shorter. `null` goes back to the body's. "The
-  bend allowance works out at ... it must be greater than zero" on one flange means
-  the body's deduction is too big for that flange's angle or radius: give it its own.
+  bend allowance of a 45° bend works out at ... it must be greater than zero to unfold
+  it" (a warning) means the body's deduction is too big for that flange's angle or
+  radius: the part is folded all the same, as SolidWorks folds it, but it has no flat
+  pattern (see "Flat pattern and export") until you give that flange its own.
 
   ```jsonl
   {"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [200, 150]}]}
@@ -265,8 +292,9 @@ X and y along its Z, so `[80, 12]` to `[100, 20]` is x 80 to 100, z 12 to 20.
   ```
 - The bends of a base flange from an open profile take `bends`: a bend model or `null`
   for each, in order along the profile, as SolidWorks' sketched bends can have their
-  own. Give a shallow bend a smaller deduction when "Corner N: The bend allowance works
-  out at ..." says the body's is too big for it.
+  own. Give a shallow bend a smaller deduction when the warning "The bend allowance of a
+  … bend works out at ..." says the body's is too big for it (the part is folded, but
+  has no flat pattern until you do).
 
   ```jsonl
   {"op": "sketch", "on": "front", "draw": [{"type": "polyline", "points": [[0, 0], [100, 0], [200, 20], [200, 40]]}]}
@@ -453,7 +481,9 @@ edge:
   corners are found again at each rebuild, so a notch cut later, or one that another
   configuration moves, gets its corners broken where it is. Edges through the sheet at
   the face's corners that are not between two sides (where a bend starts) are left. It
-  fails only if the faces have no corner at all.
+  fails only if the faces have no corner at all. A round does a notch's inside corners
+  too (filling them in); a chamfer (`kind` `chamfer`) does only the outside ones, as
+  SolidWorks does, so a notch shallower than two chamfers is no matter.
 
 ```jsonl
 {"op": "sketch", "on": "top", "draw": [{"type": "rectangle", "from": [0, 0], "to": [120, 80]}]}
@@ -636,6 +666,14 @@ down through the folded part: it notches the wall over its whole height, and tak
 
 - `bend_table`: the flat size, and each bend's direction, angle, radius and allowance.
   Check the flat size against the stock.
+- A part with no flat pattern (a bend whose allowance works out at zero or less, as
+  SolidWorks' flat pattern fails for it) has no flat size: `bend_table`, `bodies` and
+  `bom` give `no_flat_pattern`, saying why, in place of `flat_size` (and `bend_table`
+  leaves out `flat_area_mm2`), the CSV bill of materials leaves the flat cells empty,
+  and a DXF export is refused with the same reason. Its row in `bend_table` gives the
+  allowance and deduction its bend model works out at (the folded part uses a stand-in),
+  so the negative allowance shows which bend to fix. Give that flange its own `bend`
+  (see edge flanges above) and the size comes back.
 - `{"op": "export", "path": "part.dxf"}` writes the flat pattern: outline, cutouts,
   bend lines and notes on separate layers, in mm. `.step` and `.stl` write the folded
   part.

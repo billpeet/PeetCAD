@@ -28,8 +28,10 @@ one, the volume and box to match are its STEP body's as PeetCAD measures it, not
 which are a few parts in 100,000 out round freeform faces such as the ends of slanted bends. A part nothing
 can be built of is imported from its STEP file instead, and says so in its report.
 
-The library's export is on SolidWorks-PC in `C:\Users\will\AppData\Local\PeetSwExport\out-all`, and a copy
-in `peetcad-imports\exports\out-all`, with SolidWorks' STEP files in `peetcad-imports\exports\step`. Keep copies out of `%TEMP%`, which Windows empties.
+The library's latest export (format 9: parts and assemblies, with their STEP and DXF files) is on SolidWorks-PC in
+`C:\Users\will\AppData\Local\PeetSwExport\out-all-fmt9`, and a copy in `peetcad-imports\exports\v9-fs11` (with the
+few templates no longer on the NAS copied in from older exports: see its `FILLED-FROM-OLDER-EXPORTS.txt`).
+Which equations SolidWorks applies is decided in `equation-state.js`: don't go by an equation's `disabled`. Keep copies out of `%TEMP%`, which Windows empties.
 
 It is a tool for the migration, not a feature of PeetCAD: the export is SolidWorks' own
 feature data under SolidWorks' own names, and an importer inside `peet` would tie
@@ -58,11 +60,86 @@ component how far it ended up (`off_mm`) and how free it still is. The verdict i
 component is within a micron of SolidWorks' placement and every live mate and component is imported.
 Each other configuration gets a verdict of its own, in the report's `configurations`.
 
+What the export leaves open is settled by where SolidWorks has the components. A slot mate (whose
+constraint the export never gives) is centred if that moves nothing, else free: every slot mate of the
+library has its pin at its slot's middle, and SolidWorks keeps it there when the parts change size. An end
+SolidWorks gives only numbers for that are more than a millimetre off its part (a mate of a suppressed
+component, last solved for other sizes) is no face of the part, and the mate is left out, as SolidWorks
+fails it when the component is unsuppressed; for a parallel or angle mate, where only the direction counts,
+the place doesn't matter.
+
 With a format 6 export the assembled geometry is checked too (`mass`): PeetCAD's volume and box against
 SolidWorks' STEP of the configuration (`<Name>.SLDASM.<configuration>.step` beside the export), measured by
 PeetCAD, or SolidWorks' mass properties where there is no STEP. The STEP is preferred because SolidWorks'
 mass properties of an assembly can be stale: Plinth Folded Assembly's are worked out with its pipes 300 mm
 long, as the part has them, where its own equation makes them 308 mm, as its STEP has them.
+
+### A template library
+
+```
+node tools/sw-import/import-asm.js <exports> <parts run folder> <library folder> --link
+node tools/sw-import/smart.js <smart-defs.json> <library folder>
+node tools/sw-import/manifests.js <library folder> <SolidWorks manifests folder> <output folder>
+```
+
+With `--link` the output folder is a library as SolidWorks' Templates folder is: every part is copied into it
+and every component, of a part or a sub-assembly, is inserted linked to the file beside the assembly (a relative
+link), named as SolidWorks names it (`HingeMale-1`). A copy of an assembly and its parts opens with the copies, and
+FabSys swaps a component for its copy with `replace` and `link`. The assembly's own reference planes are made too.
+
+`smart.js` gives the parts their smart features (`smart_feature`) from definitions decoded out of the SolidWorks
+files (the export has none: SolidWorks keeps a smart component's library features as documents inside the part).
+Lines and circles SolidWorks converted from the part's own edges are projected from them; the rest is drawn where
+SolidWorks had it.
+
+`manifests.js` writes FabSys's template manifests (schema 2) for the library, its identity copied from SolidWorks'
+manifest of each template, so that FabSys's own template validation (`FABSYS_CORPUS_MANIFESTS`) checks every name
+a script uses against the library.
+
+## A FabSys job against SolidWorks' output for it
+
+```
+node tools/sw-import/compare-job.js <SolidWorks exports folder | dry run report.json> <PeetCAD job folder>
+     [--out report.json] [--peet <peet>] [--sw-root <name>] [--peet-root <name>] [--sw-job <n>] [--peet-job <n>]
+     [--templates-exports <folder>] [--edited <list.txt>] [--tolerance <mm>] [--no-parts]
+node tools/sw-import/test-compare-job.js [--peet <peet>]
+```
+
+Compares what FabSys built for a job in PeetCAD (FabSys.Run's `--out` folder: the root `… Enclosure Assembly.peet`
+and the parts and sub-assemblies beside it) with what it built in SolidWorks: exports (`tools/sw-export`, with
+`--step` and `--dxf`) of the job's root assembly and every part and sub-assembly in its folder. Components are
+matched by their path of instance names with each side's job number taken out (`21455-2 MS2 Floor-1` and
+`21445-2 MS2 Floor-1` are one). For each
+component it reports how far apart the two placements are (as `import-asm.js` measures; a sub-assembly is judged by
+its parts), its configuration, suppression and visibility, PeetCAD's status for it, and its part: volume and box
+(SolidWorks' STEP of the configuration, measured by PeetCAD), flat size (its flat DXF, or its unfolded flat-pattern
+configuration), features suppressed differently, dimensions with the same address that differ, and features that
+made geometry on one side only (where a smart component's cut went). Mates of the root and of each sub-assembly
+both have, by FabSys's names (`Coincident_<component>_<face>_…`), present on both and solving alike (a mate of a
+suppressed component counts as suppressed, and only the active configuration's state is used: an export's mates
+of other configurations are stale). A flat size is not compared where SolidWorks' flat pattern fails (its DXF is
+then of the folded part). A SolidWorks mate with no entity at one end, which SolidWorks reports failing or gives as
+the assembly itself, mates nothing SolidWorks has: missing in PeetCAD, it is counted apart
+(`dangling_in_solidworks`), not as missing.
+
+Instance numbers are not compared. SolidWorks numbers a second FabSys run into one assembly on from the instances
+deleted before (`-2`, `-11`…) where a fresh PeetCAD run numbers from `-1`, so components are paired level by level
+under their paired parent: by file, then by FabSys's name without its number, and within a file in order of their
+numbers or by where they are, whichever puts more of them where the other side has them (the row's `numbered`
+says when they differ). A mate's name is read through the pairing (each component's instance name becomes its
+pair's); mates whose names still don't match, and the ones SolidWorks named itself (`Coincident12`, where FabSys's
+name was taken), are paired by what they mate: type, components through the pairing, and face, edge or named
+plane. The whole assembly's volume against its STEP and box against SolidWorks'
+extreme points. A verdict per component and for the job.
+
+In place of exports it takes a FabSys.Run report of a dry run (`--backend dryrun --report x.json`, on a FabSys.Run
+that writes the dry run's `tree`): the tree the script asks for, in the names SolidWorks would give, with template
+assemblies' own components filled in from their exports (`--templates-exports`) as FabSys copies them. A dry run
+has no geometry and doesn't evaluate templates' equations, so a component an equation suppresses is reported, not
+counted.
+
+A job folder on the NAS is as the designers left it, not as FabSys did: `--edited` takes the files changed after
+the run, and marks their components.
 
 ## How it works
 
@@ -130,7 +207,11 @@ Besides the features, it brings over:
   configuration and built there, where SolidWorks' body has it to check against. One
   that is live nowhere is built and then suppressed in every configuration, so that an
   equation or FabSys can bring it back; it can't be checked. One that can't be built is
-  recorded as suppressed, with the reason.
+  recorded as suppressed, with the reason. An edge flange whose edges the export lacks
+  (SolidWorks can't build it in the part as it is) is put on the edges its outline
+  converts, where SolidWorks last solved it; a live flange on the same edge, which a
+  script suppresses before unsuppressing this one, is suppressed while it is built
+  (Door's interlocking and locking flanges, on RightReturn's and LeftReturn's edges).
 - **The names of faces and edges**, with `name_face` and `name_edge`.
 - **Equations in force.** A global variable becomes a parameter, a dimension set by a
   formula gets the formula, a feature suppressed by a condition gets a suppression rule.
@@ -165,7 +246,9 @@ few relations are found. Before the third, what is inside a sketch block is miss
 the way a distance is measured is worked out from the points.
 
 A sketch block is drawn as plain geometry where each instance puts it: PeetCAD sketches
-have no blocks, so the grouping is lost.
+have no blocks, so the grouping is lost. What each instance put in the sketch is held
+together (each point across and up from the block's first, each circle its size), so
+that it moves as one, as SolidWorks' block does; it can't turn, which SolidWorks' can.
 
 ## Verdicts
 
